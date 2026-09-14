@@ -3,7 +3,7 @@ import json
 import asyncio
 from datetime import datetime
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -13,74 +13,74 @@ SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "| CHILLI | ...")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 
-# Подключение к Google Таблицам
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+# Подключение через google.oauth2 (современный официальный способ)
+scopes = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
 creds_dict = json.loads(GOOGLE_CREDS_JSON)
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(creds)
+credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+client = gspread.authorize(credentials)
 sheet = client.open(SPREADSHEET_NAME).worksheet("Норма")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Настройка статусов, значений и точных цветов ячеек (RGB) по вашей памятке:
-# ("Текст кнопки", "Значение в ячейку", "ID", {RGB фона}, {RGB текста})
 STATUS_CONFIG = {
     "norma": {
         "title": "🟩 Норма (+5)",
         "val": "5",
-        "bg": {"red": 0.0, "green": 1.0, "blue": 0.0},        # Ярко-зеленый
-        "fg": {"red": 0.0, "green": 0.0, "blue": 0.0}         # Черный текст
+        "bg": {"red": 0.0, "green": 1.0, "blue": 0.0},
+        "fg": {"red": 0.0, "green": 0.0, "blue": 0.0}
     },
     "overnorma": {
         "title": "🟦 Перенорма (+8)",
         "val": "8",
-        "bg": {"red": 0.0, "green": 0.0, "blue": 1.0},        # Синий
-        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}         # Белый текст
+        "bg": {"red": 0.0, "green": 0.0, "blue": 1.0},
+        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}
     },
     "natyag": {
         "title": "🟪 Натяг (+1)",
         "val": "1",
-        "bg": {"red": 0.6, "green": 0.0, "blue": 0.9},        # Фиолетовый
-        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}         # Белый текст
+        "bg": {"red": 0.6, "green": 0.0, "blue": 0.9},
+        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}
     },
     "nonorma": {
         "title": "🟥 Нет нормы (-5)",
         "val": "-5",
-        "bg": {"red": 1.0, "green": 0.0, "blue": 0.0},        # Красный
-        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}         # Белый текст
+        "bg": {"red": 1.0, "green": 0.0, "blue": 0.0},
+        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}
     },
     "neaktiv": {
         "title": "⬜ Неактив (-2)",
         "val": "-2",
-        "bg": {"red": 0.6, "green": 0.6, "blue": 0.6},        # Серый
-        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}         # Белый текст
+        "bg": {"red": 0.6, "green": 0.6, "blue": 0.6},
+        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}
     },
     "new_ss": {
         "title": "🟨 Новый СС / Освоб.",
         "val": "Осв",
-        "bg": {"red": 1.0, "green": 1.0, "blue": 0.0},        # Желтый
-        "fg": {"red": 0.0, "green": 0.0, "blue": 0.0}         # Черный текст
+        "bg": {"red": 1.0, "green": 1.0, "blue": 0.0},
+        "fg": {"red": 0.0, "green": 0.0, "blue": 0.0}
     },
     "dayoff": {
         "title": "🔷 Выходной / УВ (0)",
         "val": "0",
-        "bg": {"red": 0.0, "green": 0.9, "blue": 1.0},        # Голубой
-        "fg": {"red": 0.0, "green": 0.0, "blue": 0.0}         # Черный текст
+        "bg": {"red": 0.0, "green": 0.9, "blue": 1.0},
+        "fg": {"red": 0.0, "green": 0.0, "blue": 0.0}
     },
     "question": {
         "title": "⬛ Под вопросом",
         "val": "?",
-        "bg": {"red": 0.1, "green": 0.1, "blue": 0.1},        # Черный / Тёмный
-        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}         # Белый текст
+        "bg": {"red": 0.1, "green": 0.1, "blue": 0.1},
+        "fg": {"red": 1.0, "green": 1.0, "blue": 1.0}
     }
 }
 
 def get_members_keyboard():
-    """Считывает ники из столбца B (начиная со строки 6)."""
     nicknames = sheet.col_values(2)
     buttons = []
-    
     for idx, nick in enumerate(nicknames[5:], start=6):
         nick = str(nick).strip()
         if nick and nick != "Nick":
@@ -154,7 +154,6 @@ async def save_norma(callback: CallbackQuery):
     today_short = datetime.now().strftime("%d.%m")
 
     try:
-        # Считываем строку 5 с датами
         header_row = sheet.row_values(5)
         col_idx = None
         
@@ -168,13 +167,9 @@ async def save_norma(callback: CallbackQuery):
             await callback.answer(f"Дата {today_short} не найдена в строке 5!", show_alert=True)
             return
 
-        # 1. Записываем значение в ячейку
         sheet.update_cell(row_idx, col_idx, cfg["val"])
-
-        # 2. Получаем координату ячейки в формате A1 (например C6, D6 и т.д.)
         cell_name = gspread.utils.rowcol_to_a1(row_idx, col_idx)
 
-        # 3. Красим ячейку в цвет фона и текста из памятки
         sheet.format(cell_name, {
             "backgroundColor": cfg["bg"],
             "horizontalAlignment": "CENTER",
@@ -185,11 +180,11 @@ async def save_norma(callback: CallbackQuery):
         })
 
         await callback.message.edit_text(
-            f"✅ Выставлено: **{cfg['title']}**\nЯчейка `{cell_name}` закрашена в нужный цвет!",
+            f"✅ Выставлено: **{cfg['title']}**\nЯчейка `{cell_name}` закрашена!",
             reply_markup=get_members_keyboard(),
             parse_mode="Markdown"
         )
-        await callback.answer("Сохранено и покрашено!")
+        await callback.answer("Сохранено!")
 
     except Exception as e:
         await callback.answer(f"Ошибка: {e}", show_alert=True)
@@ -199,4 +194,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-  
+    
