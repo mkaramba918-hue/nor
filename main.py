@@ -13,7 +13,6 @@ SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "| CHILLI | ...")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 
-# Подключение через google.oauth2 (современный официальный способ)
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -79,22 +78,29 @@ STATUS_CONFIG = {
 }
 
 def get_members_keyboard():
+    """Считывает ники из столбца B со строки 6."""
     nicknames = sheet.col_values(2)
     buttons = []
-    for idx, nick in enumerate(nicknames[5:], start=6):
+    
+    # Считываем список со строки 6
+    rows_data = nicknames[5:] if len(nicknames) >= 6 else []
+    
+    for idx, nick in enumerate(rows_data, start=6):
         nick = str(nick).strip()
-        if nick and nick != "Nick":
-            buttons.append([InlineKeyboardButton(text=nick, callback_data=f"sel_{idx}_{nick}")])
-        elif nick == "Nick":
-            buttons.append([InlineKeyboardButton(text=f"Сотрудник (строка {idx})", callback_data=f"sel_{idx}_Строка_{idx}")])
+        # Если ник уже указан в таблице
+        if nick and nick.lower() != "nick":
+            buttons.append([InlineKeyboardButton(text=nick, callback_data=f"sel_{idx}")])
+        else:
+            buttons.append([InlineKeyboardButton(text=f"Сотрудник (строка {idx})", callback_data=f"sel_{idx}")])
             
+    # Если столбец совсем пустой, генерируем базовые строки 6-12
     if not buttons:
-        for row in range(6, 12):
-            buttons.append([InlineKeyboardButton(text=f"Сотрудник (строка {row})", callback_data=f"sel_{row}_Строка_{row}")])
+        for r in range(6, 12):
+            buttons.append([InlineKeyboardButton(text=f"Сотрудник (строка {r})", callback_data=f"sel_{r}")])
             
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_status_keyboard(row_idx: int, nick: str):
+def get_status_keyboard(row_idx: int):
     keyboard = []
     row = []
     for key, cfg in STATUS_CONFIG.items():
@@ -132,10 +138,15 @@ async def back_to_menu(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("sel_"))
 async def choose_member(callback: CallbackQuery):
-    _, row_idx, nick = callback.data.split("_", 2)
+    _, row_idx = callback.data.split("_")
+    row_idx = int(row_idx)
+    
+    # Получаем ник из таблицы или пишем номер строки
+    nick = sheet.cell(row_idx, 2).value or f"Строка {row_idx}"
+    
     await callback.message.edit_text(
-        f"Сотрудник: **{nick}**\nВыберите статус нормы:",
-        reply_markup=get_status_keyboard(int(row_idx), nick),
+        f"Сотрудник: **{nick}** (строка {row_idx})\nВыберите статус нормы:",
+        reply_markup=get_status_keyboard(row_idx),
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -164,9 +175,10 @@ async def save_norma(callback: CallbackQuery):
                 break
 
         if not col_idx:
-            await callback.answer(f"Дата {today_short} не найдена в строке 5!", show_alert=True)
+            await callback.answer(f"Дата {today_short} не найдена в строке 5 таблицы!", show_alert=True)
             return
 
+        # Записываем значение и красим ячейку
         sheet.update_cell(row_idx, col_idx, cfg["val"])
         cell_name = gspread.utils.rowcol_to_a1(row_idx, col_idx)
 
@@ -180,11 +192,11 @@ async def save_norma(callback: CallbackQuery):
         })
 
         await callback.message.edit_text(
-            f"✅ Выставлено: **{cfg['title']}**\nЯчейка `{cell_name}` закрашена!",
+            f"✅ Выставлено: **{cfg['title']}**\nЯчейка `{cell_name}` успешно закрашена!",
             reply_markup=get_members_keyboard(),
             parse_mode="Markdown"
         )
-        await callback.answer("Сохранено!")
+        await callback.answer("Сохранено в таблицу!")
 
     except Exception as e:
         await callback.answer(f"Ошибка: {e}", show_alert=True)
