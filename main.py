@@ -26,6 +26,7 @@ sheet = client.open(SPREADSHEET_NAME).worksheet("Норма")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Настройки отметок и цветов
 STATUS_CONFIG = {
     "norma": {
         "title": "🟩 Норма (+5)",
@@ -78,26 +79,23 @@ STATUS_CONFIG = {
 }
 
 def get_members_keyboard():
-    """Считывает ники из столбца B со строки 6."""
-    nicknames = sheet.col_values(2)
+    """Считывает строго строки с 5 по 11 из колонок A (Должность) и B (Nick_Name)."""
+    # Запрашиваем ровно строки СС: A5:B11
+    rows = sheet.get("A5:B11")
     buttons = []
     
-    # Считываем список со строки 6
-    rows_data = nicknames[5:] if len(nicknames) >= 6 else []
-    
-    for idx, nick in enumerate(rows_data, start=6):
-        nick = str(nick).strip()
-        # Если ник уже указан в таблице
-        if nick and nick.lower() != "nick":
-            buttons.append([InlineKeyboardButton(text=nick, callback_data=f"sel_{idx}")])
+    for idx, row in enumerate(rows, start=5):
+        role = row[0] if len(row) > 0 and row[0] else f"Строка {idx}"
+        nick = row[1] if len(row) > 1 and row[1] else "Не указан"
+        
+        # Если ник реальный — пишем его, если "None" или пусто — пишем Должность
+        if nick and nick.lower() not in ["none", "nick", ""]:
+            label = f"{role}: {nick}"
         else:
-            buttons.append([InlineKeyboardButton(text=f"Сотрудник (строка {idx})", callback_data=f"sel_{idx}")])
+            label = f"{role} (строка {idx})"
             
-    # Если столбец совсем пустой, генерируем базовые строки 6-12
-    if not buttons:
-        for r in range(6, 12):
-            buttons.append([InlineKeyboardButton(text=f"Сотрудник (строка {r})", callback_data=f"sel_{r}")])
-            
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"sel_{idx}")])
+        
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_status_keyboard(row_idx: int):
@@ -111,7 +109,7 @@ def get_status_keyboard(row_idx: int):
     if row:
         keyboard.append(row)
         
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="back_to_menu")])
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад к выбору", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 @dp.message(Command("start"))
@@ -141,11 +139,15 @@ async def choose_member(callback: CallbackQuery):
     _, row_idx = callback.data.split("_")
     row_idx = int(row_idx)
     
-    # Получаем ник из таблицы или пишем номер строки
-    nick = sheet.cell(row_idx, 2).value or f"Строка {row_idx}"
+    # Получаем должность и ник этой строки
+    row_data = sheet.row_values(row_idx)
+    role = row_data[0] if len(row_data) > 0 else f"Строка {row_idx}"
+    nick = row_data[1] if len(row_data) > 1 else ""
+    
+    display_name = f"{role} ({nick})" if nick and nick.lower() != "none" else role
     
     await callback.message.edit_text(
-        f"Сотрудник: **{nick}** (строка {row_idx})\nВыберите статус нормы:",
+        f"Выбран: **{display_name}**\nВыберите отметку за сегодня:",
         reply_markup=get_status_keyboard(row_idx),
         parse_mode="Markdown"
     )
@@ -158,30 +160,34 @@ async def save_norma(callback: CallbackQuery):
     cfg = STATUS_CONFIG.get(status_key)
 
     if not cfg:
-        await callback.answer("Неверный статус!", show_alert=True)
+        await callback.answer("Ошибка статуса!", show_alert=True)
         return
 
-    today_full = datetime.now().strftime("%d.%m.%y")
-    today_short = datetime.now().strftime("%d.%m")
+    # Шапка находится на строке 4
+    today_short = datetime.now().strftime("%d.%m")      # '14.09'
+    today_full = datetime.now().strftime("%d.%m.%y")    # '14.09.26'
 
     try:
-        header_row = sheet.row_values(5)
+        # Строка 4 — это даты
+        header_row = sheet.row_values(4)
         col_idx = None
         
+        # Ищем колонку с сегодняшней датой
         for idx, col_val in enumerate(header_row):
             col_str = str(col_val).strip()
-            if today_full in col_str or today_short in col_str:
+            if today_short in col_str or today_full in col_str:
                 col_idx = idx + 1
                 break
 
         if not col_idx:
-            await callback.answer(f"Дата {today_short} не найдена в строке 5 таблицы!", show_alert=True)
+            await callback.answer(f"Дата {today_short} не найдена в строке 4!", show_alert=True)
             return
 
-        # Записываем значение и красим ячейку
+        # 1. Записываем баллы/статус
         sheet.update_cell(row_idx, col_idx, cfg["val"])
+        
+        # 2. Красим ячейку
         cell_name = gspread.utils.rowcol_to_a1(row_idx, col_idx)
-
         sheet.format(cell_name, {
             "backgroundColor": cfg["bg"],
             "horizontalAlignment": "CENTER",
@@ -192,7 +198,7 @@ async def save_norma(callback: CallbackQuery):
         })
 
         await callback.message.edit_text(
-            f"✅ Выставлено: **{cfg['title']}**\nЯчейка `{cell_name}` успешно закрашена!",
+            f"✅ Успешно!\nВыставлено: **{cfg['title']}** в ячейку `{cell_name}`.",
             reply_markup=get_members_keyboard(),
             parse_mode="Markdown"
         )
