@@ -35,7 +35,7 @@ def load_auth_data():
                 return json.load(f)
         except Exception:
             pass
-    return {"users": {}, "logged_in_ids": {}}
+    return {"users": {}, "active_sessions": {}}
 
 def save_auth_data(data):
     with open(USERS_FILE, "w", encoding="utf-8") as f:
@@ -45,7 +45,10 @@ def get_user_role(user_id: int):
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         return "Следящий (Владелец)"
     data = load_auth_data()
-    return data.get("logged_in_ids", {}).get(str(user_id))
+    login = data.get("active_sessions", {}).get(str(user_id))
+    if login and login in data.get("users", {}):
+        return data["users"][login].get("role", "Лидер")
+    return None
 
 def is_authorized(user_id: int) -> bool:
     return get_user_role(user_id) is not None
@@ -110,18 +113,17 @@ STATUS_CONFIG = {
 }
 
 def get_members_keyboard():
-    """Считывает строго строки 5-11 из колонок G (Должность) и H (Nick_Name)."""
     rows = sheet.get("G5:H11")
     buttons = []
     
     for idx, row in enumerate(rows, start=5):
-        role = row[0].strip() if len(row) > 0 and row[0] else ("Положенец" if idx <= 7 else "Смотрящий")
+        role = row[0].strip() if len(row) > 0 and row[0] else ("Положенец [9]" if idx <= 7 else "Смотрящий [8]")
         nick = row[1].strip() if len(row) > 1 and row[1] else ""
         
         if nick and nick.lower() not in ["none", "nick", "-", ""]:
-            label = f"👤 {nick} [{role}]"
+            label = f"👤 {nick} | {role}"
         else:
-            label = f"▫️ {role} (строка {idx})"
+            label = f"▫️ {role} (Свободно)"
             
         buttons.append([InlineKeyboardButton(text=label, callback_data=f"sel_{idx}")])
         
@@ -142,7 +144,7 @@ def get_status_keyboard(row_idx: int):
     keyboard.append([InlineKeyboardButton(text="⬅️ Назад к списку СС", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# ================= АВТОРИЗАЦИЯ И УПРАВЛЕНИЕ (ДЛЯ СЛЕДЯЩЕГО) =================
+# ================= АВТОРИЗАЦИЯ И УПРАВЛЕНИЕ =================
 
 @dp.message(Command("login"))
 async def cmd_login(message: Message):
@@ -156,12 +158,27 @@ async def cmd_login(message: Message):
     
     user_info = data.get("users", {}).get(login)
     if user_info and user_info.get("password") == password:
-        role = user_info.get("role", "Лидер")
-        data["logged_in_ids"][str(message.from_user.id)] = role
+        # Привязываем Telegram ID к этому логину
+        if "active_sessions" not in data:
+            data["active_sessions"] = {}
+        data["active_sessions"][str(message.from_user.id)] = login
         save_auth_data(data)
+        
+        role = user_info.get("role", "Лидер")
         await message.answer(f"✅ Вход выполнен!\nВаша должность: **{role}**.\nМеню управления: /start", parse_mode="Markdown")
     else:
         await message.answer("❌ Неверный логин или пароль!")
+
+@dp.message(Command("logout"))
+async def cmd_logout(message: Message):
+    data = load_auth_data()
+    uid = str(message.from_user.id)
+    if uid in data.get("active_sessions", {}):
+        del data["active_sessions"][uid]
+        save_auth_data(data)
+        await message.answer("Вы вышли из учетной записи.")
+    else:
+        await message.answer("Вы не были авторизованы.")
 
 @dp.message(Command("adduser"))
 async def cmd_adduser(message: Message):
@@ -171,7 +188,7 @@ async def cmd_adduser(message: Message):
         
     parts = message.text.split(maxsplit=3)
     if len(parts) < 3:
-        await message.answer("⚠️ Формат: `/adduser логин пароль роль`\nПример: `/adduser leader 12345 Лидер ОПГ`\nИли: `/adduser zkgo 54321 ЗКГО`", parse_mode="Markdown")
+        await message.answer("⚠️ Формат: `/adduser логин пароль роль`\nПример: `/adduser leader 12345 Лидер ОПГ`", parse_mode="Markdown")
         return
         
     login = parts[1]
@@ -179,13 +196,35 @@ async def cmd_adduser(message: Message):
     role = parts[3] if len(parts) > 3 else "Лидер"
     
     data = load_auth_data()
+    if "users" not in data:
+        data["users"] = {}
     data["users"][login] = {"password": password, "role": role}
     save_auth_data(data)
     
     await message.answer(
-        f"✅ Доступ создан!\nЛогин: `{login}`\nПароль: `{password}`\nРоль: **{role}**\nПередайте эти данные человеку для входа через `/login`.",
+        f"✅ Доступ создан!\nЛогин: `{login}`\nПароль: `{password}`\nРоль: **{role}**\nПередайте эти данные для входа через `/login`.",
         parse_mode="Markdown"
     )
+
+@dp.message(Command("users"))
+async def cmd_users(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = load_auth_data()
+    users = data.get("users", {})
+    if not users:
+        await message.answer("Пока нет созданных пользователей.")
+        return
+    
+    active_sessions = data.get("active_sessions", {})
+    lines = ["👥 **Список доступов:**\n"]
+    for login, info in users.items():
+        # Проверяем, зашел ли кто-то под этим логином
+        active_uids = [uid for uid, l in active_sessions.items() if l == login]
+        status_str = f"🟢 В сети (ID: {', '.join(active_uids)})" if active_uids else "⚪ Не в сети"
+        lines.append(f"• Логин: `{login}` | Пароль: `{info.get('password')}`\n  Роль: **{info.get('role')}** | {status_str}")
+    
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 @dp.message(Command("deluser"))
 async def cmd_deluser(message: Message):
@@ -195,16 +234,26 @@ async def cmd_deluser(message: Message):
     if len(parts) != 2:
         await message.answer("⚠️ Формат: `/deluser логин`", parse_mode="Markdown")
         return
+        
     login = parts[1]
     data = load_auth_data()
+    
     if login in data.get("users", {}):
+        # 1. Удаляем пользователя
         del data["users"][login]
+        
+        # 2. МГНОВЕННО выбрасываем всех, кто зашел под этим логином!
+        active_sessions = data.get("active_sessions", {})
+        to_delete = [uid for uid, l in active_sessions.items() if l == login]
+        for uid in to_delete:
+            del active_sessions[uid]
+            
         save_auth_data(data)
-        await message.answer(f"✅ Доступ для `{login}` отозван.", parse_mode="Markdown")
+        await message.answer(f"✅ Доступ для `{login}` полностью отозван и сессия завершена!", parse_mode="Markdown")
     else:
-        await message.answer("Пользователь не найден.")
+        await message.answer("Пользователь с таким логином не найден.")
 
-# ================= АНОНСЫ (ОТ СЛЕДЯЩЕГО / РУКОВОДСТВА) =================
+# ================= АНОНСЫ =================
 
 @dp.message(Command("announce"))
 async def cmd_announce(message: Message):
@@ -219,7 +268,7 @@ async def cmd_announce(message: Message):
         return
 
     data = load_auth_data()
-    recipient_ids = list(data.get("logged_in_ids", {}).keys())
+    recipient_ids = list(data.get("active_sessions", {}).keys())
     if ADMIN_ID and str(ADMIN_ID) not in recipient_ids:
         recipient_ids.append(str(ADMIN_ID))
 
@@ -235,7 +284,7 @@ async def cmd_announce(message: Message):
 
     await message.answer(f"✅ Оповещение отправлено {sent_count} участникам системы!")
 
-# ================= ВЫСТАВЛЕНИЕ НОРМЫ И СВОДКА =================
+# ================= МЕНЮ И ВЫСТАВЛЕНИЕ НОРМЫ =================
 
 @dp.message(Command("start"))
 @dp.message(Command("norma"))
@@ -264,28 +313,29 @@ async def show_summary(event: Message | CallbackQuery):
     today_full = datetime.now().strftime("%d.%m.%y")
 
     header = sheet.row_values(4)
-    rows_data = sheet.get("G5:Q11")
+    rows_data = sheet.get("G5:P11")
     
     col_idx = None
-    for idx, val in enumerate(header):
-        if today_short in str(val) or today_full in str(val):
-            col_idx = idx
+    for idx in range(8, len(header)):
+        val_str = str(header[idx]).strip()
+        if today_short in val_str or today_full in val_str:
+            col_idx = idx + 1
             break
 
     msg_lines = [f"📊 **Сводка нормы за сегодня ({today_short}):**\n"]
     
     for row in rows_data:
-        role = row[0] if len(row) > 0 else ""
-        nick = row[1] if len(row) > 1 else "None"
+        role = row[0] if len(row) > 0 else "СС"
+        nick = row[1] if len(row) > 1 and row[1].lower() != "none" else "Не назначен"
         
         today_val = "—"
         if col_idx is not None:
-            slice_col = col_idx - 6
+            slice_col = col_idx - 7
             if 0 <= slice_col < len(row) and row[slice_col]:
                 today_val = row[slice_col]
 
-        total_points = row[-1] if row else "0"
-        msg_lines.append(f"• **{nick}** ({role}): `{today_val}` | Итог: `{total_points}` б.")
+        total_points = row[-1] if len(row) >= 10 else "0"
+        msg_lines.append(f"• **{nick}** ({role}): отметка `{today_val}` | Итог: `{total_points}` б.")
 
     summary_text = "\n".join(msg_lines)
     summary_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ К выставлению нормы", callback_data="back_to_menu")]])
@@ -298,6 +348,9 @@ async def show_summary(event: Message | CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery):
+    if not is_authorized(callback.from_user.id):
+        await callback.answer("🔒 Доступ отозван!", show_alert=True)
+        return
     await callback.message.edit_text(
         "⚡ **Панель СС [A-ОПГ]**\nВыберите сотрудника для выставления нормы:",
         reply_markup=get_members_keyboard(),
@@ -307,6 +360,10 @@ async def back_to_menu(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("sel_"))
 async def choose_member(callback: CallbackQuery):
+    if not is_authorized(callback.from_user.id):
+        await callback.answer("🔒 Доступ отозван!", show_alert=True)
+        return
+        
     _, row_idx = callback.data.split("_")
     row_idx = int(row_idx)
     
@@ -324,6 +381,10 @@ async def choose_member(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set_"))
 async def save_norma(callback: CallbackQuery):
+    if not is_authorized(callback.from_user.id):
+        await callback.answer("🔒 Доступ отозван!", show_alert=True)
+        return
+        
     _, row_idx, status_key = callback.data.split("_")
     row_idx = int(row_idx)
     cfg = STATUS_CONFIG.get(status_key)
@@ -339,17 +400,15 @@ async def save_norma(callback: CallbackQuery):
         header_row = sheet.row_values(4)
         col_idx = None
         
-        # 1. Поиск сегодняшней даты в шапке (строка 4, начиная с колонки I = 9)
         for idx in range(8, len(header_row)):
             val_str = str(header_row[idx]).strip()
             if today_short in val_str or today_full in val_str:
                 col_idx = idx + 1
                 break
 
-        # 2. Если точная дата не найдена — берем первую свободную колонку недели
         if not col_idx:
             row_vals = sheet.row_values(row_idx)
-            for check_col in range(9, 16):  # Колонки дней недели I .. O
+            for check_col in range(9, 16):
                 if check_col > len(row_vals) or not row_vals[check_col - 1] or str(row_vals[check_col - 1]).strip() in ["-", ""]:
                     col_idx = check_col
                     break
@@ -357,7 +416,6 @@ async def save_norma(callback: CallbackQuery):
         if not col_idx:
             col_idx = 9
 
-        # 3. АВТОМАТИЧЕСКОЕ СУММИРОВАНИЕ БАЛЛОВ:
         current_val = sheet.cell(row_idx, col_idx).value
         final_val = cfg["points"]
 
@@ -369,7 +427,6 @@ async def save_norma(callback: CallbackQuery):
             except ValueError:
                 final_val = cfg["points"]
 
-        # 4. Запись и окраска ячейки
         sheet.update_cell(row_idx, col_idx, str(final_val))
         cell_name = gspread.utils.rowcol_to_a1(row_idx, col_idx)
 
@@ -398,4 +455,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+    
