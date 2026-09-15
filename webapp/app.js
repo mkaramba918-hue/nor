@@ -1,6 +1,10 @@
 const tg = window.Telegram.WebApp;
-tg.expand();
-tg.ready();
+try {
+  tg.expand();
+  tg.ready();
+} catch (e) {
+  console.log("TG init error", e);
+}
 
 let currentSlot = null;
 
@@ -24,33 +28,44 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 function showAuthScreen() {
-  document.getElementById("auth-screen").classList.remove("hidden");
-  document.getElementById("main-screen").classList.add("hidden");
+  const auth = document.getElementById("auth-screen");
+  const main = document.getElementById("main-screen");
+  if (auth) auth.classList.remove("hidden");
+  if (main) main.classList.add("hidden");
 }
 
 function showMainScreen(user) {
-  document.getElementById("auth-screen").classList.add("hidden");
-  document.getElementById("main-screen").classList.remove("hidden");
-  document.getElementById("user-badge").innerText = `Авторизован: ${user}`;
+  const auth = document.getElementById("auth-screen");
+  const main = document.getElementById("main-screen");
+  if (auth) auth.classList.add("hidden");
+  if (main) main.classList.remove("hidden");
+  
+  const badge = document.getElementById("user-badge");
+  if (badge) badge.innerText = `Авторизован: ${user}`;
+  
   renderStaff();
 }
 
 function performLogin() {
-  const login = document.getElementById("login-input").value.trim();
-  const pwd = document.getElementById("password-input").value.trim();
+  const loginInput = document.getElementById("login-input");
+  const pwdInput = document.getElementById("password-input");
+  
+  const login = loginInput ? loginInput.value.trim() : "";
+  const pwd = pwdInput ? pwdInput.value.trim() : "";
 
   if (!login || !pwd) {
     alert("Заполните логин и пароль!");
     return;
   }
 
-  // Сохраняем сессию в браузере Telegram
+  // Сразу сохраняем локально и открываем панель
   localStorage.setItem("aopg_auth_user", login);
   localStorage.setItem("aopg_auth_pwd", pwd);
-
-  // Отправляем боту подтверждение авторизации
-  sendAction({ action: "login", login: login, password: pwd });
+  
   showMainScreen(login);
+
+  // Пробуем передать боту сессию
+  sendActionSilently({ action: "login", login: login, password: pwd });
 }
 
 function logout() {
@@ -62,13 +77,16 @@ function logout() {
 function switchTab(tabId, btn) {
   document.querySelectorAll(".tab-content").forEach(el => el.classList.add("hidden"));
   document.querySelectorAll(".tab-btn").forEach(el => el.classList.remove("active"));
-  document.getElementById(tabId).classList.remove("hidden");
-  btn.classList.add("active");
+  const target = document.getElementById(tabId);
+  if (target) target.classList.remove("hidden");
+  if (btn) btn.classList.add("active");
 }
 
 function renderStaff() {
   const nContainer = document.getElementById("staff-container");
   const pContainer = document.getElementById("punish-container");
+  if (!nContainer || !pContainer) return;
+
   nContainer.innerHTML = "";
   pContainer.innerHTML = "";
 
@@ -106,12 +124,15 @@ function renderStaff() {
 
 function openNormaModal(slot) {
   currentSlot = slot;
-  document.getElementById("modal-slot-title").innerText = `Отметка для Слота #${slot}`;
-  document.getElementById("norma-modal").style.display = "flex";
+  const title = document.getElementById("modal-slot-title");
+  if (title) title.innerText = `Отметка для Слота #${slot}`;
+  const modal = document.getElementById("norma-modal");
+  if (modal) modal.style.display = "flex";
 }
 
 function closeNormaModal() {
-  document.getElementById("norma-modal").style.display = "none";
+  const modal = document.getElementById("norma-modal");
+  if (modal) modal.style.display = "none";
 }
 
 function submitNorma(statusKey) {
@@ -142,9 +163,23 @@ function submitAnnounce() {
 
 function sendAction(payload) {
   try {
-    tg.sendData(JSON.stringify(payload));
-    tg.close();
+    if (tg && tg.sendData) {
+      tg.sendData(JSON.stringify(payload));
+      tg.close();
+    } else {
+      alert("Telegram WebApp API недоступен. Откройте через кнопку в сообщении бота.");
+    }
   } catch (err) {
-    alert("Ошибка: " + err);
+    alert("Ошибка отправки: " + err.message);
+  }
+}
+
+function sendActionSilently(payload) {
+  try {
+    if (tg && tg.sendData) {
+      tg.sendData(JSON.stringify(payload));
+    }
+  } catch (err) {
+    console.log("Silent send error:", err);
   }
 }
