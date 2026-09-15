@@ -149,10 +149,18 @@ def get_main_keyboard():
             label = f"#{slot_num} ▫️ {role} (Свободно)"
         buttons.append([InlineKeyboardButton(text=label, callback_data=f"sel_{idx}")])
         
+    # Кнопка открытия Mini App (работает отправка через sendData)
+    buttons.append([
+        InlineKeyboardButton(
+            text="📱 Открыть Mini App панель",
+            web_app=WebAppInfo(url="https://mkaramba918-hue.github.io/nor/webapp/")
+        )
+    ])
+    
     buttons.append([InlineKeyboardButton(text="⚡ Всем норму (+5)", callback_data="set_all_norma")])
     buttons.append([InlineKeyboardButton(text="📊 Посмотреть сводку нормы", callback_data="show_summary")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
+    
 def get_status_keyboard(row_idx: int):
     keyboard = []
     row = []
