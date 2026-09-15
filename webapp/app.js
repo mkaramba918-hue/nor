@@ -2,14 +2,6 @@ const tg = window.Telegram.WebApp;
 tg.expand();
 tg.ready();
 
-const user = tg.initDataUnsafe?.user;
-const userBadge = document.getElementById("user-badge");
-if (user) {
-  userBadge.innerText = `В сети: ${user.first_name || "Админ"} (ID: ${user.id})`;
-} else {
-  userBadge.innerText = "Режим управления";
-}
-
 let currentSlot = null;
 
 const staffSlots = [
@@ -21,6 +13,51 @@ const staffSlots = [
   { slot: 6, role: "Смотрящий [8]" },
   { slot: 7, role: "Смотрящий [8]" }
 ];
+
+window.addEventListener("DOMContentLoaded", () => {
+  const savedUser = localStorage.getItem("aopg_auth_user");
+  if (savedUser) {
+    showMainScreen(savedUser);
+  } else {
+    showAuthScreen();
+  }
+});
+
+function showAuthScreen() {
+  document.getElementById("auth-screen").classList.remove("hidden");
+  document.getElementById("main-screen").classList.add("hidden");
+}
+
+function showMainScreen(user) {
+  document.getElementById("auth-screen").classList.add("hidden");
+  document.getElementById("main-screen").classList.remove("hidden");
+  document.getElementById("user-badge").innerText = `Авторизован: ${user}`;
+  renderStaff();
+}
+
+function performLogin() {
+  const login = document.getElementById("login-input").value.trim();
+  const pwd = document.getElementById("password-input").value.trim();
+
+  if (!login || !pwd) {
+    alert("Заполните логин и пароль!");
+    return;
+  }
+
+  // Сохраняем сессию в браузере Telegram
+  localStorage.setItem("aopg_auth_user", login);
+  localStorage.setItem("aopg_auth_pwd", pwd);
+
+  // Отправляем боту подтверждение авторизации
+  sendAction({ action: "login", login: login, password: pwd });
+  showMainScreen(login);
+}
+
+function logout() {
+  localStorage.removeItem("aopg_auth_user");
+  localStorage.removeItem("aopg_auth_pwd");
+  showAuthScreen();
+}
 
 function switchTab(tabId, btn) {
   document.querySelectorAll(".tab-content").forEach(el => el.classList.add("hidden"));
@@ -36,7 +73,7 @@ function renderStaff() {
   pContainer.innerHTML = "";
 
   staffSlots.forEach(s => {
-    // Карточка для нормы
+    // Норма
     const nCard = document.createElement("div");
     nCard.className = "staff-card";
     nCard.innerHTML = `
@@ -48,7 +85,7 @@ function renderStaff() {
     `;
     nContainer.appendChild(nCard);
 
-    // Карточка для наказаний
+    // Наказания
     const pCard = document.createElement("div");
     pCard.className = "staff-card";
     pCard.innerHTML = `
@@ -108,8 +145,6 @@ function sendAction(payload) {
     tg.sendData(JSON.stringify(payload));
     tg.close();
   } catch (err) {
-    alert("Ошибка отправки данных боту: " + err);
+    alert("Ошибка: " + err);
   }
 }
-
-renderStaff();
