@@ -546,48 +546,6 @@ async def save_norma(callback: CallbackQuery):
     )
     await callback.answer("Сохранено и покрашено!")
 
-@dp.message(F.web_app_data)
-async def handle_webapp_data(message: Message):
-    if not is_authorized(message.from_user.id):
-        return
-        
-    try:
-        data = json.loads(message.web_app_data.data)
-        slot = int(data.get("slot"))
-        status_key = data.get("status")
-        
-        cfg = STATUS_CONFIG.get(status_key)
-        if not cfg:
-            return
-
-        norma_r, _, _ = map_slot_rows(slot)
-        col_idx = get_today_column()
-        
-        # Суммирование и запись в Google Таблицу
-        current_val = sheet_norma.cell(norma_r, col_idx).value
-        final_val = cfg["points"]
-        if cfg["is_numeric"]:
-            try:
-                if current_val and str(current_val).strip() not in ["-", "", "None"]:
-                    final_val = int(str(current_val).strip()) + int(cfg["points"])
-            except ValueError:
-                final_val = cfg["points"]
-
-        sheet_norma.update_cell(norma_r, col_idx, str(final_val))
-        cell_name = gspread.utils.rowcol_to_a1(norma_r, col_idx)
-        sheet_norma.format(cell_name, {
-            "backgroundColor": cfg["bg"],
-            "horizontalAlignment": "CENTER",
-            "textFormat": {"foregroundColor": cfg["fg"], "bold": True}
-        })
-        
-        role = get_user_role(message.from_user.id)
-        log_action(message.from_user.id, role, f"[Mini App] Выставил '{cfg['title']}' слоту #{slot}")
-        
-        await message.answer(f"✅ Через Mini App выставлено: **{cfg['title']}** слоту #{slot}!")
-    except Exception as e:
-        await message.answer(f"Ошибка обработки Mini App: {e}")
-        
 @dp.message(Command("announce"))
 async def cmd_announce(message: Message):
     role = get_user_role(message.from_user.id)
@@ -597,7 +555,178 @@ async def cmd_announce(message: Message):
     if not text:
         await message.answer("⚠️ Формат: `/announce Текст объявления`", parse_mode="Markdown")
         return
-    
+        
+@dp.message(F.web_app_data)
+async def handle_webapp_data(message: Message):
+    try:
+        data = json.loads(message.web_app_data.data)
+        action = data.get("action")
+
+        # 1. ОБРАБОТКА ЛОГИНА ИЗ MINI APP
+        if action == "login":
+            login = data.get("login")
+            password = data.get("password")
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT role FROM users WHERE login = ? AND password = ?", (login, password))
+            user_row = cur.fetchone()
+
+            if user_row:
+                role = user_row[0]
+                now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                cur.execute("REPLACE INTO sessions (telegram_id, login, login_time) VALUES (?, ?, ?)", 
+                            (message.from_user.id, login, now_str))
+                conn.commit()
+                conn.close()
+                log_action(message.from_user.id, role, f"[Mini App] Вход под логином '{login}'")
+                await message.answer(f"✅ Вход через Mini App выполнен!\nДолжность: **{role}**.", parse_mode="Markdown")
+            else:
+                conn.close()
+                await message.answer("❌ Ошибка входа через Mini App: неверный логин или пароль!")
+            return
+
+        # Все остальные действия требуют авторизации:
+        if not is_authorized(message.from_user.id):
+            await message.answer("🔒 Сначала авторизуйтесь через Mini App или команду `/login`!", parse_mode="Markdown")
+            return
+
+        role = get_user_role(message.from_user.id)
+
+        # 2. ВЫСТАВЛЕНИЕ НОРМЫ ОДНОМУ
+        if action == "norma":
+            slot = int(data.get("slot"))
+            status_key = data.get("status")
+            cfg = STATUS_CONFIG.get(status_key)
+            norma_r, _, _ = map_slot_rows(slot)
+            col_idx = get_today_column()
+
+            current_val = sheet_norma.cell(norma_r, col_idx).value
+            final_val = cfg["points"]
+            if cfg["is_numeric"]:
+                try:
+                    if current_val and str(current_val).strip() not in ["-", "", "None"]:
+                        final_val = int(str(current_val).strip()) + int(cfg["points"])
+                except ValueError:
+                    final_val = cfg["points"]
+
+            sheet_norma.update_cell(norma_r, col_idx, str(final_val))
+            cell_name = gspread.utils.rowcol_to_a1(norma_r, col_idx)
+            sheet_norma.format(cell_name, {
+                "backgroundColor": cfg["bg"],
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"foregroundColor": cfg["fg"], "bold": True}
+            })
+            log_action(message.from_user.id, role, f"[Mini App] Выставил '{cfg['title']}' слоту #{slot} ({cell_name} = {final_val})")
+            await message.answer(f"✅ [Mini App] Сотруднику #{slot} выставлено: **{cfg['title']}** (итог ячейки: `{final_val}`)", parse_mode="Markdown")
+
+        # 3. ВСЕМ НОРМУ (+5)
+        elif action == "all_norma":
+            col_idx = get_today_column()
+            cfg = STATUS_CONFIG["norma"]
+            for r in range(5, 12):
+                sheet_norma.update_cell(r, col_idx, "5")
+                cell_name = gspread.utils.rowcol_to_a1(r, col_idx)
+                sheet_norma.format(cell_name, {
+                    "backgroundColor": cfg["bg"],
+                    "horizontalAlignment": "CENTER",
+                    "textFormat": {"foregroundColor": cfg["fg"], "bold": True}
+                })
+            log_action(message.from_user.id, role, "[Mini App] Выставил норму (+5) всем СС")
+            await message.answer("✅ [Mini App] Всем сотрудникам СС выставлена норма (+5)!", parse_mode="Markdown")
+
+        # 4. ЗАПРОС СВОДКИ
+        elif action == "summary":
+            today_short = datetime.now().strftime("%d.%m")
+            col_idx = get_today_column()
+            rows_data = sheet_norma.get("G5:P11")
+            msg_lines = [f"📊 **Сводка нормы ({today_short}):**\n"]
+            for row in rows_data:
+                r_role = row[0] if len(row) > 0 else "СС"
+                nick = row[1] if len(row) > 1 and row[1].lower() != "none" else "Не назначен"
+                slice_col = col_idx - 7
+                today_val = row[slice_col] if 0 <= slice_col < len(row) and row[slice_col] else "—"
+                total = row[-1] if len(row) >= 10 else "0"
+                msg_lines.append(f"• **{nick}** ({r_role}): `{today_val}` | Итог: `{total}` б.")
+            await message.answer("\n".join(msg_lines), parse_mode="Markdown")
+
+        # 5. ВЫГОВОРЫ И ПРЕДЫ
+        elif action == "punish":
+            p_type = data.get("type")
+            slot = int(data.get("slot"))
+            _, ss_r, _ = map_slot_rows(slot)
+            col_idx = 25 if "warn" in p_type else 26
+            max_val = 3 if "warn" in p_type else 2
+
+            cur_val = sheet_ss.cell(ss_r, col_idx).value or f"0/{max_val}"
+            try:
+                cur_num = int(str(cur_val).split("/")[0])
+            except Exception:
+                cur_num = 0
+
+            new_num = max(0, cur_num - 1) if "un" in p_type else min(max_val, cur_num + 1)
+            new_str = f"{new_num}/{max_val}"
+            sheet_ss.update_cell(ss_r, col_idx, new_str)
+
+            title = "Выговор" if "warn" in p_type else "Предупреждение"
+            log_action(message.from_user.id, role, f"[Mini App] {title} для #{slot}: {cur_val} -> {new_str}")
+            await message.answer(f"⚖️ [Mini App] #{slot}: {title} изменен на **{new_str}**", parse_mode="Markdown")
+
+        # 6. СМЕНА НИКА
+        elif action == "setnick":
+            slot = int(data.get("slot"))
+            nick = data.get("nick")
+            norma_r, ss_r, neaktiv_r = map_slot_rows(slot)
+            sheet_norma.update_cell(norma_r, 8, nick)
+            sheet_ss.update_cell(ss_r, 1, nick)
+            sheet_neaktiv.update_cell(neaktiv_r, 1, nick)
+            log_action(message.from_user.id, role, f"[Mini App] Ник слота #{slot} изменен на '{nick}'")
+            await message.answer(f"✅ [Mini App] Сотрудник #{slot} обновлен на **{nick}** во всех листах!", parse_mode="Markdown")
+
+        # 7. НЕАКТИВ
+        elif action == "neaktiv":
+            slot = int(data.get("slot"))
+            until = data.get("until")
+            today_str = datetime.now().strftime("%d.%m.%y")
+            norma_r, _, neaktiv_r = map_slot_rows(slot)
+            val_text = f"От {today_str} | До {until}"
+            sheet_neaktiv.update_cell(neaktiv_r, 3, val_text)
+
+            col_today = get_today_column()
+            cfg = STATUS_CONFIG["neaktiv"]
+            sheet_norma.update_cell(norma_r, col_today, "-2")
+            cell_name = gspread.utils.rowcol_to_a1(norma_r, col_today)
+            sheet_norma.format(cell_name, {
+                "backgroundColor": cfg["bg"],
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"foregroundColor": cfg["fg"], "bold": True}
+            })
+            log_action(message.from_user.id, role, f"[Mini App] Неактив слоту #{slot} ({val_text})")
+            await message.answer(f"🏖 [Mini App] Неактив #{slot} оформлен: `{val_text}` (отметка -2)", parse_mode="Markdown")
+
+        # 8. АНОНС
+        elif action == "announce":
+            text = data.get("text")
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT telegram_id FROM sessions")
+            rows = cur.fetchall()
+            conn.close()
+            recipient_ids = [r[0] for r in rows]
+            if ADMIN_ID and ADMIN_ID not in recipient_ids:
+                recipient_ids.append(ADMIN_ID)
+            sent = 0
+            for uid in recipient_ids:
+                try:
+                    await bot.send_message(chat_id=int(uid), text=f"📢 **ВАЖНЫЙ АНОНС**\nОт: **{role}**\n\n{text}", parse_mode="Markdown")
+                    sent += 1
+                except Exception:
+                    pass
+            log_action(message.from_user.id, role, f"[Mini App] Анонс ({sent} чел.): '{text[:30]}...'")
+            await message.answer(f"✅ [Mini App] Анонс отправлен {sent} участникам!", parse_mode="Markdown")
+
+    except Exception as e:
+        await message.answer(f"Ошибка Mini App: {e}")
+        
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("SELECT telegram_id FROM sessions")
