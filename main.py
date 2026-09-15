@@ -554,23 +554,14 @@ async def save_norma(callback: CallbackQuery):
     )
     await callback.answer("Сохранено и покрашено!")
 
-@dp.message(Command("announce"))
-async def cmd_announce(message: Message):
-    role = get_user_role(message.from_user.id)
-    if not role:
-        return
-    text = message.text.replace("/announce", "").strip()
-    if not text:
-        await message.answer("⚠️ Формат: `/announce Текст объявления`", parse_mode="Markdown")
-        return
-        
+# ================= ОБРАБОТЧИК ДАННЫХ ИЗ MINI APP =================
 @dp.message(F.web_app_data)
 async def handle_webapp_data(message: Message):
     try:
         data = json.loads(message.web_app_data.data)
         action = data.get("action")
 
-        # 1. ОБРАБОТКА ЛОГИНА ИЗ MINI APP
+        # 1. Логин
         if action == "login":
             login = data.get("login")
             password = data.get("password")
@@ -593,14 +584,14 @@ async def handle_webapp_data(message: Message):
                 await message.answer("❌ Ошибка входа через Mini App: неверный логин или пароль!")
             return
 
-        # Все остальные действия требуют авторизации:
+        # Проверка авторизации для остальных действий
         if not is_authorized(message.from_user.id):
             await message.answer("🔒 Сначала авторизуйтесь через Mini App или команду `/login`!", parse_mode="Markdown")
             return
 
         role = get_user_role(message.from_user.id)
 
-        # 2. ВЫСТАВЛЕНИЕ НОРМЫ ОДНОМУ
+        # 2. Норма одному сотруднику
         if action == "norma":
             slot = int(data.get("slot"))
             status_key = data.get("status")
@@ -627,7 +618,7 @@ async def handle_webapp_data(message: Message):
             log_action(message.from_user.id, role, f"[Mini App] Выставил '{cfg['title']}' слоту #{slot} ({cell_name} = {final_val})")
             await message.answer(f"✅ [Mini App] Сотруднику #{slot} выставлено: **{cfg['title']}** (итог ячейки: `{final_val}`)", parse_mode="Markdown")
 
-        # 3. ВСЕМ НОРМУ (+5)
+        # 3. Всем норму (+5)
         elif action == "all_norma":
             col_idx = get_today_column()
             cfg = STATUS_CONFIG["norma"]
@@ -642,7 +633,7 @@ async def handle_webapp_data(message: Message):
             log_action(message.from_user.id, role, "[Mini App] Выставил норму (+5) всем СС")
             await message.answer("✅ [Mini App] Всем сотрудникам СС выставлена норма (+5)!", parse_mode="Markdown")
 
-        # 4. ЗАПРОС СВОДКИ
+        # 4. Запрос сводки
         elif action == "summary":
             today_short = datetime.now().strftime("%d.%m")
             col_idx = get_today_column()
@@ -657,7 +648,7 @@ async def handle_webapp_data(message: Message):
                 msg_lines.append(f"• **{nick}** ({r_role}): `{today_val}` | Итог: `{total}` б.")
             await message.answer("\n".join(msg_lines), parse_mode="Markdown")
 
-        # 5. ВЫГОВОРЫ И ПРЕДЫ
+        # 5. Выговоры и преды
         elif action == "punish":
             p_type = data.get("type")
             slot = int(data.get("slot"))
@@ -665,11 +656,18 @@ async def handle_webapp_data(message: Message):
             col_idx = 25 if "warn" in p_type else 26
             max_val = 3 if "warn" in p_type else 2
 
-            cur_val = sheet_ss.cell(ss_r, col_idx).value or f"0/{max_val}"
             try:
-                cur_num = int(str(cur_val).split("/")[0])
+                cur_val = sheet_ss.cell(ss_r, col_idx).value or f"0/{max_val}"
             except Exception:
+                cur_val = f"0/{max_val}"
+
+            if not cur_val or "/" not in str(cur_val):
                 cur_num = 0
+            else:
+                try:
+                    cur_num = int(str(cur_val).split("/")[0])
+                except Exception:
+                    cur_num = 0
 
             new_num = max(0, cur_num - 1) if "un" in p_type else min(max_val, cur_num + 1)
             new_str = f"{new_num}/{max_val}"
@@ -677,9 +675,9 @@ async def handle_webapp_data(message: Message):
 
             title = "Выговор" if "warn" in p_type else "Предупреждение"
             log_action(message.from_user.id, role, f"[Mini App] {title} для #{slot}: {cur_val} -> {new_str}")
-            await message.answer(f"⚖️ [Mini App] #{slot}: {title} изменен на **{new_str}**", parse_mode="Markdown")
+            await message.answer(f"⚖️ [Mini App] #{slot}: {title} изменен: **{cur_val}** ➔ **{new_str}**", parse_mode="Markdown")
 
-        # 6. СМЕНА НИКА
+        # 6. Смена ника
         elif action == "setnick":
             slot = int(data.get("slot"))
             nick = data.get("nick")
@@ -690,7 +688,7 @@ async def handle_webapp_data(message: Message):
             log_action(message.from_user.id, role, f"[Mini App] Ник слота #{slot} изменен на '{nick}'")
             await message.answer(f"✅ [Mini App] Сотрудник #{slot} обновлен на **{nick}** во всех листах!", parse_mode="Markdown")
 
-        # 7. НЕАКТИВ
+        # 7. Неактив
         elif action == "neaktiv":
             slot = int(data.get("slot"))
             until = data.get("until")
@@ -711,7 +709,7 @@ async def handle_webapp_data(message: Message):
             log_action(message.from_user.id, role, f"[Mini App] Неактив слоту #{slot} ({val_text})")
             await message.answer(f"🏖 [Mini App] Неактив #{slot} оформлен: `{val_text}` (отметка -2)", parse_mode="Markdown")
 
-        # 8. АНОНС
+        # 8. Анонс
         elif action == "announce":
             text = data.get("text")
             conn = sqlite3.connect(DB_PATH)
@@ -734,7 +732,18 @@ async def handle_webapp_data(message: Message):
 
     except Exception as e:
         await message.answer(f"Ошибка Mini App: {e}")
-        
+
+# ================= КОМАНДА АНОНСА ИЗ ЧАТА =================
+@dp.message(Command("announce"))
+async def cmd_announce(message: Message):
+    role = get_user_role(message.from_user.id)
+    if not role:
+        return
+    text = message.text.replace("/announce", "").strip()
+    if not text:
+        await message.answer("⚠️ Формат: `/announce Текст объявления`", parse_mode="Markdown")
+        return
+    
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("SELECT telegram_id FROM sessions")
