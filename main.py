@@ -546,6 +546,48 @@ async def save_norma(callback: CallbackQuery):
     )
     await callback.answer("Сохранено и покрашено!")
 
+@dp.message(F.web_app_data)
+async def handle_webapp_data(message: Message):
+    if not is_authorized(message.from_user.id):
+        return
+        
+    try:
+        data = json.loads(message.web_app_data.data)
+        slot = int(data.get("slot"))
+        status_key = data.get("status")
+        
+        cfg = STATUS_CONFIG.get(status_key)
+        if not cfg:
+            return
+
+        norma_r, _, _ = map_slot_rows(slot)
+        col_idx = get_today_column()
+        
+        # Суммирование и запись в Google Таблицу
+        current_val = sheet_norma.cell(norma_r, col_idx).value
+        final_val = cfg["points"]
+        if cfg["is_numeric"]:
+            try:
+                if current_val and str(current_val).strip() not in ["-", "", "None"]:
+                    final_val = int(str(current_val).strip()) + int(cfg["points"])
+            except ValueError:
+                final_val = cfg["points"]
+
+        sheet_norma.update_cell(norma_r, col_idx, str(final_val))
+        cell_name = gspread.utils.rowcol_to_a1(norma_r, col_idx)
+        sheet_norma.format(cell_name, {
+            "backgroundColor": cfg["bg"],
+            "horizontalAlignment": "CENTER",
+            "textFormat": {"foregroundColor": cfg["fg"], "bold": True}
+        })
+        
+        role = get_user_role(message.from_user.id)
+        log_action(message.from_user.id, role, f"[Mini App] Выставил '{cfg['title']}' слоту #{slot}")
+        
+        await message.answer(f"✅ Через Mini App выставлено: **{cfg['title']}** слоту #{slot}!")
+    except Exception as e:
+        await message.answer(f"Ошибка обработки Mini App: {e}")
+        
 @dp.message(Command("announce"))
 async def cmd_announce(message: Message):
     role = get_user_role(message.from_user.id)
