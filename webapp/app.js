@@ -58,14 +58,11 @@ function performLogin() {
     return;
   }
 
-  // Сразу сохраняем локально и открываем панель
   localStorage.setItem("aopg_auth_user", login);
   localStorage.setItem("aopg_auth_pwd", pwd);
   
   showMainScreen(login);
-
-  // Пробуем передать боту сессию
-  sendActionSilently({ action: "login", login: login, password: pwd });
+  sendAction({ action: "login", login: login, password: pwd }, false);
 }
 
 function logout() {
@@ -91,7 +88,7 @@ function renderStaff() {
   pContainer.innerHTML = "";
 
   staffSlots.forEach(s => {
-    // Норма
+    // Карточка для нормы
     const nCard = document.createElement("div");
     nCard.className = "staff-card";
     nCard.innerHTML = `
@@ -103,7 +100,7 @@ function renderStaff() {
     `;
     nContainer.appendChild(nCard);
 
-    // Наказания
+    // Карточка для наказаний
     const pCard = document.createElement("div");
     pCard.className = "staff-card";
     pCard.innerHTML = `
@@ -161,25 +158,20 @@ function submitAnnounce() {
   sendAction({ action: "announce", text });
 }
 
-function sendAction(payload) {
+function sendAction(payload, showSuccessAlert = true) {
   try {
     if (tg && tg.sendData) {
       tg.sendData(JSON.stringify(payload));
-      tg.close();
+      if (showSuccessAlert) {
+        // Показываем подтверждение без закрытия окна
+        if (tg.HapticFeedback) {
+          tg.HapticFeedback.notificationOccurred('success');
+        }
+      }
     } else {
-      alert("Telegram WebApp API недоступен. Откройте через кнопку в сообщении бота.");
+      alert("Ошибка: откройте приложение через кнопку меню бота.");
     }
   } catch (err) {
     alert("Ошибка отправки: " + err.message);
-  }
-}
-
-function sendActionSilently(payload) {
-  try {
-    if (tg && tg.sendData) {
-      tg.sendData(JSON.stringify(payload));
-    }
-  } catch (err) {
-    console.log("Silent send error:", err);
   }
 }
