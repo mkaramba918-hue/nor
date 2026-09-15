@@ -26,6 +26,40 @@
     .header { text-align: center; margin-bottom: 14px; }
     .header h2 { margin: 0 0 4px; font-size: 19px; }
     .header p { margin: 0; font-size: 13px; color: var(--hint); }
+
+    /* Окно логина */
+    #auth-screen {
+      background: var(--card-bg);
+      border-radius: 14px;
+      padding: 22px 18px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+      margin-top: 40px;
+    }
+    .input-field {
+      width: 100%;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 9px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+    .input-field:focus { border-color: var(--accent); }
+    .btn-main {
+      width: 100%;
+      padding: 12px;
+      background: var(--accent);
+      color: var(--accent-text);
+      font-weight: 600;
+      font-size: 14px;
+      border: none;
+      border-radius: 9px;
+      cursor: pointer;
+    }
+
+    /* Навигация */
     .tabs {
       display: flex;
       gap: 6px;
@@ -92,26 +126,6 @@
       color: #fff;
       cursor: pointer;
     }
-    .input-field {
-      width: 100%;
-      padding: 10px;
-      margin-bottom: 8px;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 8px;
-      color: var(--text);
-      outline: none;
-    }
-    .btn-main {
-      width: 100%;
-      padding: 10px;
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
-    }
     .modal-overlay {
       display: none;
       position: fixed;
@@ -166,64 +180,81 @@
   </style>
 </head>
 <body>
-  <div class="header">
-    <h2>⚡ A-OPG | Панель СС</h2>
-    <p id="user-badge">Загрузка профиля...</p>
-  </div>
 
-  <div class="tabs">
-    <button class="tab-btn active" onclick="switchTab('tab-norma', this)">Норма</button>
-    <button class="tab-btn" onclick="switchTab('tab-punish', this)">Наказания</button>
-    <button class="tab-btn" onclick="switchTab('tab-extra', this)">Инструменты</button>
-  </div>
-
-  <div id="tab-norma" class="tab-content">
-    <div class="staff-list" id="staff-container"></div>
-    <div class="quick-grid">
-      <button class="quick-btn" style="background: #27ae60;" onclick="sendAction({action: 'all_norma'})">⚡ Всем норму (+5)</button>
-      <button class="quick-btn" style="background: #2f80ed;" onclick="sendAction({action: 'summary'})">📊 Сводка нормы</button>
+  <!-- Экран логина (открыт по умолчанию) -->
+  <div id="auth-screen">
+    <div class="header">
+      <h2>🔐 Авторизация</h2>
+      <p>Введите логин и пароль от следящего</p>
     </div>
+    <input type="text" id="login-input" class="input-field" placeholder="Логин (например: leader)">
+    <input type="password" id="password-input" class="input-field" placeholder="Пароль">
+    <button class="btn-main" onclick="performLogin()">Войти в панель</button>
   </div>
 
-  <div id="tab-punish" class="tab-content hidden">
-    <div class="staff-list" id="punish-container"></div>
-  </div>
-
-  <div id="tab-extra" class="tab-content hidden">
-    <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
-      <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">👤 Сменить ник</div>
-      <select id="setnick-slot" class="input-field">
-        <option value="1">Слот #1 [9]</option>
-        <option value="2">Слот #2 [9]</option>
-        <option value="3">Слот #3 [9]</option>
-        <option value="4">Слот #4 [8]</option>
-        <option value="5">Слот #5 [8]</option>
-        <option value="6">Слот #6 [8]</option>
-        <option value="7">Слот #7 [8]</option>
-      </select>
-      <input type="text" id="setnick-name" class="input-field" placeholder="Nick_Name">
-      <button class="btn-main" onclick="submitNick()">Сохранить ник</button>
+  <!-- Главный экран (скрыт до логина) -->
+  <div id="main-screen" class="hidden">
+    <div class="header">
+      <h2>⚡ A-OPG | Панель СС</h2>
+      <p id="user-badge">Авторизован: ...</p>
     </div>
 
-    <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
-      <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">🏖 Оформить неактив</div>
-      <select id="neaktiv-slot" class="input-field">
-        <option value="1">Слот #1</option>
-        <option value="2">Слот #2</option>
-        <option value="3">Слот #3</option>
-        <option value="4">Слот #4</option>
-        <option value="5">Слот #5</option>
-        <option value="6">Слот #6</option>
-        <option value="7">Слот #7</option>
-      </select>
-      <input type="text" id="neaktiv-until" class="input-field" placeholder="До даты (напр: 18.09)">
-      <button class="btn-main" style="background:#e67e22;" onclick="submitNeaktiv()">Записать неактив (-2)</button>
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('tab-norma', this)">Норма</button>
+      <button class="tab-btn" onclick="switchTab('tab-punish', this)">Наказания</button>
+      <button class="tab-btn" onclick="switchTab('tab-extra', this)">Инструменты</button>
     </div>
 
-    <div style="background: var(--card-bg); padding: 12px; border-radius: 10px;">
-      <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">📢 Анонс составу</div>
-      <input type="text" id="announce-text" class="input-field" placeholder="Текст объявления">
-      <button class="btn-main" style="background:#8e44ad;" onclick="submitAnnounce()">Отправить анонс</button>
+    <div id="tab-norma" class="tab-content">
+      <div class="staff-list" id="staff-container"></div>
+      <div class="quick-grid">
+        <button class="quick-btn" style="background: #27ae60;" onclick="sendAction({action: 'all_norma'})">⚡ Всем норму (+5)</button>
+        <button class="quick-btn" style="background: #2f80ed;" onclick="sendAction({action: 'summary'})">📊 Сводка нормы</button>
+      </div>
+    </div>
+
+    <div id="tab-punish" class="tab-content hidden">
+      <div class="staff-list" id="punish-container"></div>
+    </div>
+
+    <div id="tab-extra" class="tab-content hidden">
+      <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
+        <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">👤 Сменить ник</div>
+        <select id="setnick-slot" class="input-field">
+          <option value="1">Слот #1 [9]</option>
+          <option value="2">Слот #2 [9]</option>
+          <option value="3">Слот #3 [9]</option>
+          <option value="4">Слот #4 [8]</option>
+          <option value="5">Слот #5 [8]</option>
+          <option value="6">Слот #6 [8]</option>
+          <option value="7">Слот #7 [8]</option>
+        </select>
+        <input type="text" id="setnick-name" class="input-field" placeholder="Nick_Name">
+        <button class="btn-main" onclick="submitNick()">Сохранить ник</button>
+      </div>
+
+      <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
+        <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">🏖 Оформить неактив</div>
+        <select id="neaktiv-slot" class="input-field">
+          <option value="1">Слот #1</option>
+          <option value="2">Слот #2</option>
+          <option value="3">Слот #3</option>
+          <option value="4">Слот #4</option>
+          <option value="5">Слот #5</option>
+          <option value="6">Слот #6</option>
+          <option value="7">Слот #7</option>
+        </select>
+        <input type="text" id="neaktiv-until" class="input-field" placeholder="До даты (напр: 18.09)">
+        <button class="btn-main" style="background:#e67e22;" onclick="submitNeaktiv()">Записать неактив (-2)</button>
+      </div>
+
+      <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
+        <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">📢 Анонс составу</div>
+        <input type="text" id="announce-text" class="input-field" placeholder="Текст объявления">
+        <button class="btn-main" style="background:#8e44ad;" onclick="submitAnnounce()">Отправить анонс</button>
+      </div>
+
+      <button class="btn-main" style="background: #e74c3c; margin-top: 10px;" onclick="logout()">Выйти из профиля</button>
     </div>
   </div>
 
