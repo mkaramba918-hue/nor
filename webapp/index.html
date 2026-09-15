@@ -13,11 +13,7 @@
       --hint: var(--tg-theme-hint-color, #8e8e98);
       --accent: var(--tg-theme-button-color, #2f80ed);
       --accent-text: var(--tg-theme-button-text-color, #ffffff);
-      --danger: #eb5757;
-      --success: #27ae60;
-      --warning: #f2994a;
     }
-
     * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -27,57 +23,9 @@
       padding: 14px;
       user-select: none;
     }
-
-    .header {
-      text-align: center;
-      margin-bottom: 14px;
-    }
-    .header h2 {
-      margin: 0 0 4px;
-      font-size: 19px;
-      font-weight: 700;
-    }
-    .header p {
-      margin: 0;
-      font-size: 13px;
-      color: var(--hint);
-    }
-
-    /* Экран входа */
-    #auth-screen {
-      background: var(--card-bg);
-      border-radius: 14px;
-      padding: 20px 16px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-      margin-top: 30px;
-    }
-    .input-field {
-      width: 100%;
-      padding: 12px 14px;
-      margin-bottom: 12px;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 9px;
-      color: var(--text);
-      font-size: 14px;
-      outline: none;
-    }
-    .input-field:focus {
-      border-color: var(--accent);
-    }
-    .btn-main {
-      width: 100%;
-      padding: 12px;
-      background: var(--accent);
-      color: var(--accent-text);
-      font-weight: 600;
-      font-size: 14px;
-      border: none;
-      border-radius: 9px;
-      cursor: pointer;
-    }
-
-    /* Навигация вкладок */
+    .header { text-align: center; margin-bottom: 14px; }
+    .header h2 { margin: 0 0 4px; font-size: 19px; }
+    .header p { margin: 0; font-size: 13px; color: var(--hint); }
     .tabs {
       display: flex;
       gap: 6px;
@@ -100,15 +48,8 @@
     .tab-btn.active {
       background: var(--card-bg);
       color: var(--text);
-      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
     }
-
-    /* Карточки СС */
-    .staff-list {
-      display: flex;
-      flex-direction: column;
-      gap: 9px;
-    }
+    .staff-list { display: flex; flex-direction: column; gap: 9px; }
     .staff-card {
       background: var(--card-bg);
       border-radius: 11px;
@@ -116,7 +57,6 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.18);
     }
     .staff-info .role {
       font-size: 11px;
@@ -124,15 +64,8 @@
       color: var(--hint);
       text-transform: uppercase;
     }
-    .staff-info .slot {
-      font-size: 15px;
-      font-weight: bold;
-      margin-top: 2px;
-    }
-    .staff-actions {
-      display: flex;
-      gap: 6px;
-    }
+    .staff-info .slot { font-size: 15px; font-weight: bold; margin-top: 2px; }
+    .staff-actions { display: flex; gap: 6px; }
     .card-btn {
       padding: 7px 11px;
       font-size: 12px;
@@ -144,8 +77,6 @@
     }
     .btn-blue { background: var(--accent); }
     .btn-dark { background: #373843; }
-
-    /* Быстрые кнопки */
     .quick-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -161,8 +92,26 @@
       color: #fff;
       cursor: pointer;
     }
-
-    /* Модальное окно */
+    .input-field {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 8px;
+      color: var(--text);
+      outline: none;
+    }
+    .btn-main {
+      width: 100%;
+      padding: 10px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
     .modal-overlay {
       display: none;
       position: fixed;
@@ -179,13 +128,6 @@
       max-width: 500px;
       border-radius: 18px 18px 0 0;
       padding: 18px;
-      box-shadow: 0 -4px 18px rgba(0,0,0,0.35);
-    }
-    .modal-title {
-      font-size: 15px;
-      font-weight: bold;
-      margin-bottom: 12px;
-      text-align: center;
     }
     .status-grid {
       display: grid;
@@ -210,7 +152,6 @@
     .c-new { background: #f2c94c; color: #000; }
     .c-off { background: #00c0b5; }
     .c-quest { background: #2c3e50; }
-
     .close-btn {
       width: 100%;
       background: rgba(255,255,255,0.09);
@@ -225,100 +166,79 @@
   </style>
 </head>
 <body>
-
-  <!-- 1. Экран логина -->
-  <div id="auth-screen">
-    <div class="header">
-      <h2>🔐 Авторизация</h2>
-      <p>Введите логин и пароль от следящего</p>
-    </div>
-    <input type="text" id="login-input" class="input-field" placeholder="Логин (например: leader)">
-    <input type="password" id="password-input" class="input-field" placeholder="Пароль">
-    <button class="btn-main" onclick="performLogin()">Войти в панель</button>
+  <div class="header">
+    <h2>⚡ A-OPG | Панель СС</h2>
+    <p id="user-badge">Загрузка профиля...</p>
   </div>
 
-  <!-- 2. Главный экран приложения -->
-  <div id="main-screen" class="hidden">
-    <div class="header">
-      <h2>⚡ A-OPG | Панель СС</h2>
-      <p id="user-badge">Авторизован: <b id="user-role-label">...</b></p>
-    </div>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('tab-norma', this)">Норма</button>
+    <button class="tab-btn" onclick="switchTab('tab-punish', this)">Наказания</button>
+    <button class="tab-btn" onclick="switchTab('tab-extra', this)">Инструменты</button>
+  </div>
 
-    <!-- Вкладки управления -->
-    <div class="tabs">
-      <button class="tab-btn active" onclick="switchTab('tab-norma')">Норма</button>
-      <button class="tab-btn" onclick="switchTab('tab-punish')">Наказания</button>
-      <button class="tab-btn" onclick="switchTab('tab-extra')">Инструменты</button>
-    </div>
-
-    <!-- Вкладка 1: Выставление нормы -->
-    <div id="tab-norma" class="tab-content">
-      <div class="staff-list" id="staff-container"></div>
-
-      <div class="quick-grid">
-        <button class="quick-btn" style="background: #27ae60;" onclick="sendFastAllNorma()">⚡ Всем норму (+5)</button>
-        <button class="quick-btn" style="background: #2f80ed;" onclick="requestSummary()">📊 Сводка нормы</button>
-      </div>
-    </div>
-
-    <!-- Вкладка 2: Выговоры и преды -->
-    <div id="tab-punish" class="tab-content hidden">
-      <div class="staff-list" id="punish-container"></div>
-    </div>
-
-    <!-- Вкладка 3: Смена ника, неактивы, анонсы -->
-    <div id="tab-extra" class="tab-content hidden">
-      <div style="background: var(--card-bg); padding: 14px; border-radius: 12px; margin-bottom: 12px;">
-        <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px;">👤 Назначить / сменить ник</div>
-        <select id="setnick-slot" class="input-field" style="margin-bottom: 8px;">
-          <option value="1">Слот #1 [Положенец 9]</option>
-          <option value="2">Слот #2 [Положенец 9]</option>
-          <option value="3">Слот #3 [Положенец 9]</option>
-          <option value="4">Слот #4 [Смотрящий 8]</option>
-          <option value="5">Слот #5 [Смотрящий 8]</option>
-          <option value="6">Слот #6 [Смотрящий 8]</option>
-          <option value="7">Слот #7 [Смотрящий 8]</option>
-        </select>
-        <input type="text" id="setnick-name" class="input-field" placeholder="Nick_Name">
-        <button class="btn-main" onclick="sendSetNick()">Обновить ник во всех таблицах</button>
-      </div>
-
-      <div style="background: var(--card-bg); padding: 14px; border-radius: 12px; margin-bottom: 12px;">
-        <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px;">🏖 Оформить неактив</div>
-        <select id="neaktiv-slot" class="input-field" style="margin-bottom: 8px;">
-          <option value="1">Слот #1</option>
-          <option value="2">Слот #2</option>
-          <option value="3">Слот #3</option>
-          <option value="4">Слот #4</option>
-          <option value="5">Слот #5</option>
-          <option value="6">Слот #6</option>
-          <option value="7">Слот #7</option>
-        </select>
-        <input type="text" id="neaktiv-until" class="input-field" placeholder="До какого числа (например: 18.09)">
-        <button class="btn-main" style="background:#e67e22;" onclick="sendNeaktiv()">Записать неактив (-2)</button>
-      </div>
-
-      <div style="background: var(--card-bg); padding: 14px; border-radius: 12px;">
-        <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px;">📢 Отправить анонс составу</div>
-        <input type="text" id="announce-text" class="input-field" placeholder="Текст объявления">
-        <button class="btn-main" style="background:#8e44ad;" onclick="sendAnnounce()">Разослать анонс</button>
-      </div>
+  <div id="tab-norma" class="tab-content">
+    <div class="staff-list" id="staff-container"></div>
+    <div class="quick-grid">
+      <button class="quick-btn" style="background: #27ae60;" onclick="sendAction({action: 'all_norma'})">⚡ Всем норму (+5)</button>
+      <button class="quick-btn" style="background: #2f80ed;" onclick="sendAction({action: 'summary'})">📊 Сводка нормы</button>
     </div>
   </div>
 
-  <!-- Шторка выбора статуса нормы -->
+  <div id="tab-punish" class="tab-content hidden">
+    <div class="staff-list" id="punish-container"></div>
+  </div>
+
+  <div id="tab-extra" class="tab-content hidden">
+    <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
+      <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">👤 Сменить ник</div>
+      <select id="setnick-slot" class="input-field">
+        <option value="1">Слот #1 [9]</option>
+        <option value="2">Слот #2 [9]</option>
+        <option value="3">Слот #3 [9]</option>
+        <option value="4">Слот #4 [8]</option>
+        <option value="5">Слот #5 [8]</option>
+        <option value="6">Слот #6 [8]</option>
+        <option value="7">Слот #7 [8]</option>
+      </select>
+      <input type="text" id="setnick-name" class="input-field" placeholder="Nick_Name">
+      <button class="btn-main" onclick="submitNick()">Сохранить ник</button>
+    </div>
+
+    <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
+      <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">🏖 Оформить неактив</div>
+      <select id="neaktiv-slot" class="input-field">
+        <option value="1">Слот #1</option>
+        <option value="2">Слот #2</option>
+        <option value="3">Слот #3</option>
+        <option value="4">Слот #4</option>
+        <option value="5">Слот #5</option>
+        <option value="6">Слот #6</option>
+        <option value="7">Слот #7</option>
+      </select>
+      <input type="text" id="neaktiv-until" class="input-field" placeholder="До даты (напр: 18.09)">
+      <button class="btn-main" style="background:#e67e22;" onclick="submitNeaktiv()">Записать неактив (-2)</button>
+    </div>
+
+    <div style="background: var(--card-bg); padding: 12px; border-radius: 10px;">
+      <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">📢 Анонс составу</div>
+      <input type="text" id="announce-text" class="input-field" placeholder="Текст объявления">
+      <button class="btn-main" style="background:#8e44ad;" onclick="submitAnnounce()">Отправить анонс</button>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="norma-modal">
     <div class="modal-sheet">
-      <div class="modal-title" id="modal-slot-title">Выбор отметки</div>
+      <div style="font-size: 15px; font-weight: bold; margin-bottom: 12px; text-align: center;" id="modal-slot-title">Выбор отметки</div>
       <div class="status-grid">
-        <button class="status-btn c-norma" onclick="sendNormaStatus('norma')">🟩 Норма (+5)</button>
-        <button class="status-btn c-overnorma" onclick="sendNormaStatus('overnorma')">🟦 Перенорма (+8)</button>
-        <button class="status-btn c-natyag" onclick="sendNormaStatus('natyag')">🟪 Натяг (+1)</button>
-        <button class="status-btn c-nonorma" onclick="sendNormaStatus('nonorma')">🟥 Нет нормы (-5)</button>
-        <button class="status-btn c-neaktiv" onclick="sendNormaStatus('neaktiv')">⬜ Неактив (-2)</button>
-        <button class="status-btn c-new" onclick="sendNormaStatus('new_ss')">🟨 Новый СС (Осв)</button>
-        <button class="status-btn c-off" onclick="sendNormaStatus('dayoff')">🔷 Выходной (0)</button>
-        <button class="status-btn c-quest" onclick="sendNormaStatus('question')">⬛ Под вопросом (?)</button>
+        <button class="status-btn c-norma" onclick="submitNorma('norma')">🟩 Норма (+5)</button>
+        <button class="status-btn c-overnorma" onclick="submitNorma('overnorma')">🟦 Перенорма (+8)</button>
+        <button class="status-btn c-natyag" onclick="submitNorma('natyag')">🟪 Натяг (+1)</button>
+        <button class="status-btn c-nonorma" onclick="submitNorma('nonorma')">🟥 Нет нормы (-5)</button>
+        <button class="status-btn c-neaktiv" onclick="submitNorma('neaktiv')">⬜ Неактив (-2)</button>
+        <button class="status-btn c-new" onclick="submitNorma('new_ss')">🟨 Новый СС (Осв)</button>
+        <button class="status-btn c-off" onclick="submitNorma('dayoff')">🔷 Выходной (0)</button>
+        <button class="status-btn c-quest" onclick="submitNorma('question')">⬛ Вопрос (?)</button>
       </div>
       <button class="close-btn" onclick="closeNormaModal()">Отмена</button>
     </div>
