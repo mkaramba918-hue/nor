@@ -44,4 +44,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD sh -c "ulimit -s unlimited && python bot.py"
+CMD ["taskset", "-c", "0,1", "python", "bot.py"]
+
