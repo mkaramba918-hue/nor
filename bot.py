@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile, BufferedInputFile
 
-# 1. Снятие системного лимита стека операционной системы (защита от SIGSEGV -11)
+# Снятие системного лимита стека операционной системы (защита от вылета памяти -11)
 def set_unlimited_stack():
     try:
         resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
@@ -35,6 +35,7 @@ user_logs: dict[int, dict] = {}
 
 
 def safe_decode(b: bytes) -> str:
+    """Безопасное декодирование вывода компилятора."""
     if not b:
         return ""
     for enc in ("utf-8", "cp1251", "cp866", "latin-1"):
@@ -46,6 +47,7 @@ def safe_decode(b: bytes) -> str:
 
 
 def auto_repair_source_code(file_path: str) -> list[str]:
+    """Автоматическое устранение синтаксических ошибок в исходнике мода."""
     fixes = []
     try:
         with open(file_path, "rb") as f:
@@ -62,7 +64,7 @@ def auto_repair_source_code(file_path: str) -> list[str]:
         else:
             code = raw_bytes.decode("utf-8", errors="replace")
 
-        # 1. Автозакрытие незакрытых кавычек в директивах #define
+        # 1. Автоматическое закрытие незакрытых кавычек в строках #define
         def fix_quotes(match):
             line = match.group(0)
             if line.count('"') % 2 != 0:
@@ -72,7 +74,7 @@ def auto_repair_source_code(file_path: str) -> list[str]:
 
         code = re.sub(r'^#define\s+.*', fix_quotes, code, flags=re.MULTILINE)
 
-        # 2. Настройки MySQL для HostGTA
+        # 2. Настройки подключения к базе MySQL для хостинга HostGTA
         mysql_block = (
             '#define MYSQL_HOST      "127.0.0.1"\n'
             '#define MYSQL_USER      "user909028"\n'
@@ -81,29 +83,28 @@ def auto_repair_source_code(file_path: str) -> list[str]:
         )
         if re.search(r'#if\s+defined\s+LAN_MODE[\s\S]*?#endif', code):
             code = re.sub(r'#if\s+defined\s+LAN_MODE[\s\S]*?#endif', mysql_block, code)
-            fixes.append("Обновлен блок MySQL под параметры HostGTA")
+            fixes.append("Обновлен блок MySQL под HostGTA (127.0.0.1, user909028, FpUjJoAu2gVD)")
         elif re.search(r'#define\s+MYSQL_PASS', code):
             code = re.sub(r'#define\s+MYSQL_HOST\s+.*', '#define MYSQL_HOST      "127.0.0.1"', code)
             code = re.sub(r'#define\s+MYSQL_USER\s+.*', '#define MYSQL_USER      "user909028"', code)
             code = re.sub(r'#define\s+MYSQL_BASE\s+.*', '#define MYSQL_BASE      "user909028"', code)
             code = re.sub(r'#define\s+MYSQL_PASS\s+.*', '#define MYSQL_PASS      "FpUjJoAu2gVD"', code)
-            fixes.append("Прописаны реквизиты MySQL HostGTA")
+            fixes.append("Параметры MySQL настроены на HostGTA")
 
-        # 3. Нормализация относительных путей инклудов
+        # 3. Нормализация путей инклудов (устранение аварийных ../include/)
         before_inc = code
-        code = re.sub(r'#include\s+[<"]\.\.[/\\]include[/\\]system[/\\]([^>"]+)[>"]', r'#include <\1>', code)
-        code = re.sub(r'#include\s+[<"]\.\.[/\\]include[/\\]([^>"]+)[>"]', r'#include <\1>', code)
-        code = re.sub(r'#include\s+[<"]\.\.[/\\]([^>"]+)[>"]', r'#include <\1>', code)
-        code = re.sub(r'#include\s+[<"]system/([^>"]+)[>"]', r'#include <\1>', code)
+        code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\](system[/\\][^>"]+)[>"]', r'#include <\1>', code)
+        code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\]([^>"]+)[>"]', r'#include <\1>', code)
+        code = re.sub(r'#include\s+[<"](?:\.\.[/\\])+([^>"]+)[>"]', r'#include <\1>', code)
         if code != before_inc:
-            fixes.append("Нормализованы пути инклудов (убраны ../ и подпапки)")
+            fixes.append("Нормализованы пути инклудов: устранены переходы `../`")
 
-        # 4. Отключение директивы disablerecursion (вызывает вылет -11 в 3.10)
+        # 4. Отключение директивы disablerecursion (вызывает сбой памяти -11 в Pawncc 3.10)
         if re.search(r'#pragma\s+disablerecursion', code):
-            code = re.sub(r'(#pragma\s+disablerecursion)', r'// \1 /* Отключено для предотвращения сбоя */', code)
+            code = re.sub(r'(#pragma\s+disablerecursion)', r'// \1 /* Отключено ботом для защиты от Segfault */', code)
             fixes.append("Отключен `#pragma disablerecursion`")
 
-        # 5. Проверка точки входа main()
+        # 5. Проверка точки входа
         if not re.search(r'\bmain\s*\(\s*\)', code):
             code += "\n\nmain() {}\n"
             fixes.append("Добавлена точка входа `main()`")
@@ -111,13 +112,13 @@ def auto_repair_source_code(file_path: str) -> list[str]:
         # 6. Закрытие оборванных комментариев
         if code.count("/*") > code.count("*/"):
             code += "\n*/\n" * (code.count("/*") - code.count("*/"))
-            fixes.append("Закрыт незакрытый комментарий /* */")
+            fixes.append("Закрыт незакрытый комментарий /* ... */")
 
         with open(file_path, "w", encoding=enc, errors="replace") as f:
             f.write(code)
 
     except Exception as e:
-        fixes.append(f"Предупреждение: {e}")
+        fixes.append(f"Предупреждение парсера: {e}")
 
     return fixes
 
@@ -126,8 +127,9 @@ def auto_repair_source_code(file_path: str) -> list[str]:
 async def start_handler(message: Message):
     await message.answer(
         "👋 **Pawn Compiler Bot**\n\n"
-        "Отправьте мне архив `.zip` с модом для сборки в `.amx`.\n"
-        "• `/log` — посмотреть полный отчет компиляции.",
+        "Отправьте архив `.zip` с модом для компиляции.\n"
+        "Бот автоматически исправит синтаксис, подключит библиотеки и пришлёт готовый `.amx` в ZIP-архиве.\n\n"
+        "• `/log` — полный отчет последней сборки.",
         parse_mode="Markdown"
     )
 
@@ -146,7 +148,7 @@ async def log_handler(message: Message):
         f"• **Файл:** `{data['input_file']}`\n"
         f"• **Исходник:** `{data['target_file']}`\n"
         f"• **Статус:** {data['status']}\n"
-        f"• **Код возврата:** `{data['returncode']}`\n"
+        f"• **Код:** `{data['returncode']}`\n"
         f"• **Время:** `{data['elapsed']} сек`\n"
     )
 
@@ -242,27 +244,52 @@ async def handle_compilation(message: Message):
 
         pwn_dir = os.path.dirname(src_path)
 
-        # Копируем ВСЕ найденные .inc и вспомогательные .pwn прямо в pwn_dir
-        # Это гарантирует, что cp_race.pwn, pickup.pwn и другие файлы будут мгновенно найдены
+        # Полное разрешение всех файлов: копируем ВСЕ .inc и .pwn файлы
+        # как в корень pwn_dir, так и во вложенные структуры (например, pwn_dir/system/)
         if file_name.endswith(".zip"):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
                     f_lower = f.lower()
                     if (f_lower.endswith(".inc") or f_lower.endswith(".pwn")) and os.path.join(root, f) != src_path:
-                        dest = os.path.join(pwn_dir, f)
-                        if not os.path.exists(dest):
+                        src_f = os.path.join(root, f)
+                        # 1. Прямая копия в pwn_dir (для #include "file.pwn")
+                        flat_dest = os.path.join(pwn_dir, f)
+                        if not os.path.exists(flat_dest):
                             try:
-                                shutil.copy2(os.path.join(root, f), dest)
+                                shutil.copy2(src_f, flat_dest)
                             except Exception:
                                 pass
 
-        # Автоматическое исправление синтаксиса в главном файле
+                        # 2. Если файл лежал в папке system/ (для #include <system/file.pwn>)
+                        if "system" in root.lower():
+                            sys_dir = os.path.join(pwn_dir, "system")
+                            os.makedirs(sys_dir, exist_ok=True)
+                            sys_dest = os.path.join(sys_dir, f)
+                            if not os.path.exists(sys_dest):
+                                try:
+                                    shutil.copy2(src_f, sys_dest)
+                                except Exception:
+                                pass
+
+        # Символические ссылки на случай старых путей ../include
+        parent_dir = os.path.dirname(pwn_dir)
+        for d in list(all_subdirs):
+            if os.path.basename(d).lower() == "include":
+                try:
+                    os.symlink(d, os.path.join(parent_dir, "include"))
+                except OSError:
+                    pass
+                try:
+                    os.symlink(d, os.path.join(tmpdir, "include"))
+                except OSError:
+                    pass
+
         applied_fixes = auto_repair_source_code(src_path)
 
         base_name = os.path.splitext(os.path.basename(src_path))[0]
-        out_path = os.path.join(tmpdir, f"{base_name}.amx")
+        out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
-        # Добавляем ВСЕ директории архива в аргументы поиска -i
+        # Добавляем все папки архива в параметры поиска компилятора -i
         include_args = [f"-i{d}" for d in all_subdirs]
         if os.path.exists(INCLUDE_DIR):
             include_args.append(f"-i{INCLUDE_DIR}")
@@ -270,7 +297,7 @@ async def handle_compilation(message: Message):
         cmd = [
             "pawncc",
             src_path,
-            f"-o{out_path}",
+            f"-o{out_amx}",
             *include_args,
             "-O0",
             "-d0",
@@ -278,7 +305,7 @@ async def handle_compilation(message: Message):
             "-;+"
         ]
 
-        await status_msg.edit_text("⚙️ Компиляция 60 000+ строк...")
+        await status_msg.edit_text("⚙️ Компиляция мода (60 000+ строк)...")
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -294,7 +321,7 @@ async def handle_compilation(message: Message):
             await status_msg.edit_text("❌ Ошибка: Время ожидания превышено (180 сек).")
             return
         except Exception as e:
-            await status_msg.edit_text(f"❌ Ошибка компилятора: {e}")
+            await status_msg.edit_text(f"❌ Ошибка вызова компилятора: {e}")
             return
 
         elapsed = round(time.time() - start_time, 2)
@@ -303,8 +330,8 @@ async def handle_compilation(message: Message):
         output_log = (out_text + "\n" + err_text).strip()
 
         is_success = (
-            os.path.exists(out_path)
-            and os.path.getsize(out_path) > 0
+            os.path.exists(out_amx)
+            and os.path.getsize(out_amx) > 0
             and process.returncode == 0
         )
 
@@ -321,24 +348,31 @@ async def handle_compilation(message: Message):
 
         if is_success:
             await status_msg.delete()
-            amx_size = round(os.path.getsize(out_path) / (1024 * 1024), 2)
-            fixes_text = "\n".join([f"• {f}" for f in applied_fixes]) if applied_fixes else "Файл не потребовал исправлений."
+            amx_size = round(os.path.getsize(out_amx) / (1024 * 1024), 2)
+            fixes_text = "\n".join([f"• {f}" for f in applied_fixes]) if applied_fixes else "Файл не потребовал правок."
+
+            # Упаковка .amx в zip-архив
+            zip_out_path = os.path.join(tmpdir, f"{base_name}_amx.zip")
+            with zipfile.ZipFile(zip_out_path, 'w', zipfile.ZIP_DEFLATED) as z:
+                z.write(out_amx, arcname=f"{base_name}.amx")
+                z.write(out_amx, arcname=f"gamemodes/{base_name}.amx")
 
             caption = (
                 f"✅ **Мод успешно скомпилирован!** ({elapsed} сек)\n\n"
-                f"📁 **Размер:** {amx_size} МБ\n"
+                f"📁 **Размер AMX:** {amx_size} МБ\n"
+                f"📦 **Внутри ZIP:** `{base_name}.amx` и `gamemodes/{base_name}.amx`\n\n"
                 f"🛠 **Авто-исправления:**\n{fixes_text}"
             )
 
             await message.reply_document(
-                FSInputFile(out_path, filename=f"{base_name}.amx"),
+                FSInputFile(zip_out_path, filename=f"{base_name}_amx.zip"),
                 caption=caption,
                 parse_mode="Markdown"
             )
         else:
-            if os.path.exists(out_path):
+            if os.path.exists(out_amx):
                 try:
-                    os.remove(out_path)
+                    os.remove(out_amx)
                 except OSError:
                     pass
 
@@ -358,3 +392,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+                    
