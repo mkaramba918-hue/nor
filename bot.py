@@ -120,7 +120,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
             code = re.sub(r'#define\s+MYSQL_PASS\s+.*', f'#define MYSQL_PASS      "{db_pass}"', code)
             fixes.append("Параметры MySQL приведены к заданным настройкам")
 
-        # 3. Нормализация путей инклудов
+        # 3. Нормализация относительных путей
         before = code
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\](system[/\\][^>"]+)[>"]', r'#include <\1>', code)
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\]([^>"]+)[>"]', r'#include <\1>', code)
@@ -249,27 +249,48 @@ async def api_compile_handler(request):
                                 except Exception:
                                     pass
 
+        # Копируем системные инклуды в pwn_dir/include
+        sys_include = get_system_include()
+        if os.path.exists(sys_include):
+            local_sys = os.path.join(pwn_dir, "include")
+            os.makedirs(local_sys, exist_ok=True)
+            for sf in os.listdir(sys_include):
+                s_path = os.path.join(sys_include, sf)
+                if os.path.isfile(s_path):
+                    try:
+                        shutil.copy2(s_path, os.path.join(local_sys, sf))
+                        shutil.copy2(s_path, os.path.join(pwn_dir, sf))
+                    except Exception:
+                        pass
+
         fixes = auto_repair_source_code(src_path, db_host, db_user, db_name, db_pass)
         base_name = os.path.splitext(os.path.basename(src_path))[0]
+        src_filename = os.path.basename(src_path)
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
         pawncc_path = get_pawncc_exe()
-        sys_include = get_system_include()
 
-        include_args = [f"-i{d}" for d in all_subdirs]
-        if os.path.exists(sys_include):
-            include_args.append(f"-i{sys_include}")
+        # Формируем относительные пути инклудов без слэшей в начале
+        include_args = ["-i.", "-iinclude", "-isystem"]
+        for d in all_subdirs:
+            try:
+                rel = os.path.relpath(d, pwn_dir)
+                if rel != "." and f"-i{rel}" not in include_args:
+                    include_args.append(f"-i{rel}")
+            except ValueError:
+                pass
 
+        # Очищенные флаги компилятора (без -Z+ и без абсолютных путей)
         cmd = [
             "wine",
             pawncc_path,
-            src_path,
-            f"-o{out_amx}",
+            src_filename,
+            f"-o{base_name}.amx",
             *include_args,
             "-O0",
             "-d0",
-            "-Z+",
-            "-;+"
+            "-;+",
+            "-(+"
         ]
 
         wine_env = os.environ.copy()
@@ -449,27 +470,45 @@ async def handle_document(message: Message):
                                 except Exception:
                                     pass
 
+        sys_include = get_system_include()
+        if os.path.exists(sys_include):
+            local_sys = os.path.join(pwn_dir, "include")
+            os.makedirs(local_sys, exist_ok=True)
+            for sf in os.listdir(sys_include):
+                s_path = os.path.join(sys_include, sf)
+                if os.path.isfile(s_path):
+                    try:
+                        shutil.copy2(s_path, os.path.join(local_sys, sf))
+                        shutil.copy2(s_path, os.path.join(pwn_dir, sf))
+                    except Exception:
+                        pass
+
         fixes = auto_repair_source_code(src_path)
         base_name = os.path.splitext(os.path.basename(src_path))[0]
+        src_filename = os.path.basename(src_path)
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
         pawncc_path = get_pawncc_exe()
-        sys_include = get_system_include()
 
-        include_args = [f"-i{d}" for d in all_subdirs]
-        if os.path.exists(sys_include):
-            include_args.append(f"-i{sys_include}")
+        include_args = ["-i.", "-iinclude", "-isystem"]
+        for d in all_subdirs:
+            try:
+                rel = os.path.relpath(d, pwn_dir)
+                if rel != "." and f"-i{rel}" not in include_args:
+                    include_args.append(f"-i{rel}")
+            except ValueError:
+                pass
 
         cmd = [
             "wine",
             pawncc_path,
-            src_path,
-            f"-o{out_amx}",
+            src_filename,
+            f"-o{base_name}.amx",
             *include_args,
             "-O0",
             "-d0",
-            "-Z+",
-            "-;+"
+            "-;+",
+            "-(+"
         ]
 
         wine_env = os.environ.copy()
@@ -523,4 +562,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
