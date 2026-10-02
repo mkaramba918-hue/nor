@@ -6,6 +6,14 @@ try {
   console.log("TG init error", e);
 }
 
+// ⚠️️ ВСТАВЬТЕ СЮДА ВАШ ПУБЛИЧНЫЙ ДОМЕН ИЗ RAILWAY (если запускаете через GitHub Pages)
+// Если Mini App открывается прямо с Railway, оставьте window.location.origin
+const RAILWAY_URL = "https://nor-production-674b.up.railway.app"; // Замените на ваш домен Railway
+
+const BACKEND_URL = window.location.origin.includes("github.io") 
+  ? RAILWAY_URL 
+  : window.location.origin;
+
 let selectedFile = null;
 let currentDownloadUrl = null;
 
@@ -54,7 +62,7 @@ async function startCompilation() {
   
   statusBadge.className = "status-badge st-loading";
   statusBadge.innerText = "⚙️ Компиляция 60 000+ строк...";
-  compilerLog.innerText = "Загрузка файла на сервер и подготовка инклудов...\n";
+  compilerLog.innerText = "Отправка архива на сервер компиляции...\n";
 
   const formData = new FormData();
   formData.append("file", selectedFile);
@@ -64,12 +72,19 @@ async function startCompilation() {
   formData.append("db_pass", document.getElementById("db-pass").value.trim());
 
   try {
-    const response = await fetch("/api/compile", {
+    const response = await fetch(`${BACKEND_URL}/api/compile`, {
       method: "POST",
       body: formData
     });
 
-    const res = await response.json();
+    const rawText = await response.text();
+    let res;
+
+    try {
+      res = JSON.parse(rawText);
+    } catch (parseErr) {
+      throw new Error(`Сервер вернул ошибку (${response.status}):\n` + rawText.replace(/<[^>]*>?/gm, '').slice(0, 300));
+    }
 
     compileBtn.disabled = false;
     compileBtn.innerText = "🚀 Скомпилировать мод";
@@ -77,7 +92,7 @@ async function startCompilation() {
     if (res.success) {
       statusBadge.className = "status-badge st-success";
       statusBadge.innerText = `✅ Успешно за ${res.elapsed} сек (${res.amx_size} МБ)`;
-      currentDownloadUrl = res.download_url;
+      currentDownloadUrl = `${BACKEND_URL}${res.download_url}`;
       downloadBox.classList.remove("hidden");
 
       let fixesText = "";
@@ -99,15 +114,14 @@ async function startCompilation() {
     compileBtn.innerText = "🚀 Скомпилировать мод";
     statusBadge.className = "status-badge st-error";
     statusBadge.innerText = "❌ Ошибка соединения с сервером";
-    compilerLog.innerText = String(err);
+    compilerLog.innerText = String(err.message || err);
   }
 }
 
 function downloadResult() {
   if (!currentDownloadUrl) return;
-  // Открытие скачивания через встроенный метод Telegram или браузер
   if (tg?.openLink) {
-    tg.openLink(window.location.origin + currentDownloadUrl);
+    tg.openLink(currentDownloadUrl);
   } else {
     window.location.href = currentDownloadUrl;
   }
