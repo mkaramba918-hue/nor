@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Установка 32-битной архитектуры, Wine и утилит
+# 1. Установка архитектуры i386, Wine и системных утилит
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -12,15 +12,28 @@ RUN dpkg --add-architecture i386 && \
 
 WORKDIR /app
 
-# Скачивание и установка Windows-версии компилятора Pawn
-RUN mkdir -p /app/compiler && \
-    curl -fsSL -o /tmp/pawnc_win.zip https://github.com/pawn-lang/compiler/releases/download/v3.10.10/pawnc-3.10.10-windows.zip && \
-    unzip -qo /tmp/pawnc_win.zip -d /app/compiler/ && \
-    rm -rf /tmp/pawnc_win.zip
-
-# Инициализация Wine без вывода лишних логов
+# 2. Настройка окружения для Wine без предупреждений и мусорных логов
 ENV WINEDEBUG=-all
 ENV WINEARCH=win32
+ENV WINEPREFIX=/root/.wine
+ENV XDG_RUNTIME_DIR=/tmp
+
+# 3. Скачивание и гарантированное извлечение Windows-компилятора Pawn и библиотек
+RUN mkdir -p /tmp/pawnc_dl /app/compiler/bin /app/compiler/include && \
+    curl -fsSL -o /tmp/pawnc_win.zip https://github.com/pawn-lang/compiler/releases/download/v3.10.10/pawnc-3.10.10-windows.zip && \
+    unzip -qo /tmp/pawnc_win.zip -d /tmp/pawnc_dl/ && \
+    find /tmp/pawnc_dl -name "pawncc.exe" -exec cp {} /app/compiler/bin/ \; && \
+    find /tmp/pawnc_dl -name "*.dll" -exec cp {} /app/compiler/bin/ \; && \
+    find /tmp/pawnc_dl -type d -name "include" -exec cp -r {}/. /app/compiler/include/ \; && \
+    rm -rf /tmp/pawnc_dl /tmp/pawnc_win.zip
+
+# 4. Скачивание официальных SA-MP инклудов (a_samp.inc и др.)
+RUN curl -fsSL -o /tmp/samp.zip https://files.sa-mp.mp/samp037_svr_R2-2-1_win32.zip && \
+    unzip -qo /tmp/samp.zip "pawno/include/*" -d /tmp/ && \
+    cp -r /tmp/pawno/include/* /app/compiler/include/ && \
+    rm -rf /tmp/samp.zip /tmp/pawno
+
+# 5. Предварительная инициализация префикса Wine при сборке контейнера
 RUN wineboot --init > /dev/null 2>&1 || true
 
 COPY requirements.txt .
