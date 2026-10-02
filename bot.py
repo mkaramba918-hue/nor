@@ -195,8 +195,6 @@ async def handle_compilation(message: Message):
             *include_args,
             "-O1",
             "-d3",
-            "-X65536",
-            "-s65536",
             "-;+"
         ]
 
