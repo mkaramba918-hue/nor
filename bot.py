@@ -27,7 +27,7 @@ RAILWAY_STATIC_URL = os.getenv("RAILWAY_STATIC_URL")
 if RAILWAY_STATIC_URL and not RAILWAY_STATIC_URL.startswith("http"):
     WEBAPP_URL = f"https://{RAILWAY_STATIC_URL}"
 else:
-    WEBAPP_URL = os.getenv("WEBAPP_URL", "https://your-domain.up.railway.app")
+    WEBAPP_URL = os.getenv("WEBAPP_URL", "https://nor-production-674b.up.railway.app")
 
 PORT = int(os.getenv("PORT", 8080))
 bot = Bot(token=BOT_TOKEN)
@@ -36,7 +36,6 @@ dp = Dispatcher()
 STORAGE_DIR = "/tmp/amx_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
-# Глобальная история всех компиляций (хранит последние 50 сборок Web App + Telegram)
 BOT_START_TIME = time.time()
 COMPILE_STATS = {"total": 0, "success": 0, "failed": 0}
 compilation_history: list[dict] = []
@@ -44,7 +43,6 @@ user_logs: dict[int, dict] = {}
 
 
 def get_pawncc_exe() -> str:
-    """Поиск бинарника pawncc.exe внутри контейнера."""
     candidates = [
         "/app/compiler/bin/pawncc.exe",
         "/app/compiler/pawncc.exe"
@@ -62,7 +60,6 @@ def get_pawncc_exe() -> str:
 
 
 def get_system_include() -> str:
-    """Поиск папки базовых инклудов."""
     candidates = ["/app/compiler/include", "/app/include"]
     for c in candidates:
         if os.path.exists(c):
@@ -97,8 +94,14 @@ def format_uptime(seconds: float) -> str:
     return " ".join(parts)
 
 
+def isolate_cpu():
+    try:
+        os.sched_setaffinity(0, {0, 1})
+    except Exception:
+        pass
+
+
 def add_include_guards_to_files(root_dir: str, exclude_file: str):
-    """Предотвращает бесконечное зацикливание при перекрестных вызовах #include."""
     for root, _, files in os.walk(root_dir):
         for f in files:
             f_l = f.lower()
@@ -144,7 +147,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
         else:
             code = raw.decode("utf-8", errors="replace")
 
-        # 1. Закрытие незакрытых кавычек
+        # Закрытие незакрытых кавычек
         def fix_quotes(m):
             l = m.group(0)
             if l.count('"') % 2 != 0:
@@ -154,7 +157,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
 
         code = re.sub(r'^#define\s+.*', fix_quotes, code, flags=re.MULTILINE)
 
-        # 2. Настройки подключения HostGTA
+        # MySQL HostGTA
         mysql_block = (
             f'#define MYSQL_HOST      "{db_host}"\n'
             f'#define MYSQL_USER      "{db_user}"\n'
@@ -171,7 +174,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
             code = re.sub(r'#define\s+MYSQL_PASS\s+.*', f'#define MYSQL_PASS      "{db_pass}"', code)
             fixes.append("Параметры MySQL приведены к заданным настройкам")
 
-        # 3. Нормализация относительных путей
+        # Относительные пути
         before = code
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\](system[/\\][^>"]+)[>"]', r'#include <\1>', code)
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\]([^>"]+)[>"]', r'#include <\1>', code)
@@ -179,7 +182,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
         if code != before:
             fixes.append("Нормализованы пути `#include` (убраны `../`)")
 
-        # 4. ЗАЩИТА ОТ КРАША 0000003A: гарантируем активный #pragma disablerecursion
+        # Защита от краша 0000003A
         if re.search(r'//\s*#pragma\s+disablerecursion', code):
             code = re.sub(r'//\s*(#pragma\s+disablerecursion)[^\r\n]*', r'\1', code)
             fixes.append("Восстановлен `#pragma disablerecursion`")
@@ -187,7 +190,6 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
             code = "#pragma disablerecursion\n" + code
             fixes.append("Включен `#pragma disablerecursion` (защита от вылета памяти)")
 
-        # 5. Точка входа main()
         if not re.search(r'\bmain\s*\(\s*\)', code):
             code += "\n\nmain() {}\n"
             fixes.append("Добавлена точка входа `main()`")
@@ -202,7 +204,6 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
 
 
 def save_compilation_record(source: str, input_file: str, target_file: str, status: str, returncode: int, elapsed: float, output: str, applied_fixes: list, user_id=None) -> dict:
-    """Сохраняет отчет в историю компиляций бота."""
     global COMPILE_STATS
     rec_id = str(uuid.uuid4())[:6]
     rec = {
@@ -235,7 +236,7 @@ def save_compilation_record(source: str, input_file: str, target_file: str, stat
 
 
 # ==============================================================================
-#                  API ДЛЯ MINI APP (CORS + ЛИМИТ ДО 100 МБ)
+#                  API ДЛЯ MINI APP
 # ==============================================================================
 
 def cors_response(data, status=200):
@@ -312,7 +313,6 @@ async def api_compile_handler(request):
 
         pwn_dir = os.path.dirname(src_path)
 
-        # Копируем библиотеки к исходнику
         if filename.lower().endswith(".zip"):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
@@ -335,10 +335,8 @@ async def api_compile_handler(request):
                                 except Exception:
                                     pass
 
-        # Добавляем защиту от зацикливания инклудов
         add_include_guards_to_files(extract_dir if filename.lower().endswith(".zip") else tmpdir, src_path)
 
-        # Копируем базовые библиотеки в include
         sys_include = get_system_include()
         if os.path.exists(sys_include):
             local_sys = os.path.join(pwn_dir, "include")
@@ -368,12 +366,7 @@ async def api_compile_handler(request):
             except ValueError:
                 pass
 
-        # taskset -c 0,1 ограничивает процесс 2 ядрами (устраняет сбой ntdll 48 cores)
-        # -O0 -d0 устраняют переполнение внутренних таблиц оптимизатора
         cmd = [
-            "taskset",
-            "-c",
-            "0,1",
             "wine",
             pawncc_path,
             src_filename,
@@ -400,7 +393,8 @@ async def api_compile_handler(request):
                 cwd=pwn_dir,
                 env=wine_env,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                preexec_fn=isolate_cpu
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
@@ -412,7 +406,6 @@ async def api_compile_handler(request):
         out_log = (safe_decode(stdout) + "\n" + safe_decode(stderr)).strip()
         is_success = os.path.exists(out_amx) and os.path.getsize(out_amx) > 0 and proc.returncode == 0
 
-        # Сохранение в общую историю бота
         rec = save_compilation_record(
             "Web App 🌐",
             filename,
@@ -592,7 +585,6 @@ async def clean_handler(message: Message):
     )
 
 
-# КОМАНДА /LOGS — ВЫВОДИТ ВСЮ ИСТОРИЮ ВСЕХ СБОРОК
 @dp.message(Command("logs"))
 async def logs_all_handler(message: Message):
     if not compilation_history:
@@ -614,7 +606,6 @@ async def logs_all_handler(message: Message):
 
     summary_text = "\n".join(lines)
 
-    # Формируем общий текстовый файл со всеми логами всех сборок
     full_dump = []
     for i, item in enumerate(compilation_history, 1):
         full_dump.append(
@@ -636,7 +627,6 @@ async def logs_all_handler(message: Message):
         await message.reply_document(doc_file, caption=summary_text[:1000] + "\n\n...полный список в файле выше.")
 
 
-# КОМАНДА /LOG — ВЫВОДИТ ПОСЛЕДНИЙ ЛОГ ИЛИ ЛОГ ПО НОМЕРУ / ID
 @dp.message(Command("log"))
 async def log_single_handler(message: Message):
     args = message.text.split()
@@ -654,7 +644,6 @@ async def log_single_handler(message: Message):
                     target_rec = item
                     break
 
-    # Если аргументов нет — берем последнюю сборку пользователя или самую последнюю в системе
     if not target_rec:
         user_id = message.from_user.id
         if user_id in user_logs:
@@ -706,7 +695,6 @@ async def log_single_handler(message: Message):
         await message.reply_document(document=doc_file, caption=report_header, parse_mode="Markdown")
 
 
-# ОБРАБОТКА КОМАНД ВИДА /log_a1b2c3
 @dp.message(F.text.regexp(r"^/log_([a-zA-Z0-9]+)"))
 async def log_by_hash_handler(message: Message):
     match = re.match(r"^/log_([a-zA-Z0-9]+)", message.text)
@@ -846,9 +834,6 @@ async def handle_document(message: Message):
                 pass
 
         cmd = [
-            "taskset",
-            "-c",
-            "0,1",
             "wine",
             pawncc_path,
             src_filename,
@@ -875,7 +860,8 @@ async def handle_document(message: Message):
                 cwd=pwn_dir,
                 env=wine_env,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                preexec_fn=isolate_cpu
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
@@ -929,7 +915,7 @@ async def handle_document(message: Message):
                 f"```\n{err_box}\n```\n\n"
                 f"ℹ️ Для детального отчёта введите `/log`.",
                 parse_mode="Markdown"
-            ) 
+            )
 
 
 # ==============================================================================
@@ -943,4 +929,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
