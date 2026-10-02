@@ -6,12 +6,15 @@ try {
   console.log("TG init error", e);
 }
 
-// Если открыто с GitHub Pages, запросы перенаправляются на Railway:
-const RAILWAY_FALLBACK = "https://nor-production-674b.up.railway.app"; 
+// Актуальный домен Railway
+const RAILWAY_FALLBACK = "https://nor-production-674b.up.railway.app";
 
-const BACKEND_URL = window.location.origin.includes("github.io") 
+const RAW_BACKEND_URL = window.location.origin.includes("github.io") 
   ? RAILWAY_FALLBACK 
   : window.location.origin;
+
+// Защита от двойных слешей в URL
+const BACKEND_URL = RAW_BACKEND_URL.replace(/\/+$/, "");
 
 let selectedFile = null;
 let currentDownloadUrl = null;
@@ -65,10 +68,16 @@ async function startCompilation() {
 
   const formData = new FormData();
   formData.append("file", selectedFile);
-  formData.append("db_host", document.getElementById("db-host").value.trim());
-  formData.append("db_user", document.getElementById("db-user").value.trim());
-  formData.append("db_name", document.getElementById("db-name").value.trim());
-  formData.append("db_pass", document.getElementById("db-pass").value.trim());
+  formData.append("db_host", document.getElementById("db-host") ? document.getElementById("db-host").value.trim() : "127.0.0.1");
+  formData.append("db_user", document.getElementById("db-user") ? document.getElementById("db-user").value.trim() : "user909028");
+  formData.append("db_name", document.getElementById("db-name") ? document.getElementById("db-name").value.trim() : "user909028");
+  formData.append("db_pass", document.getElementById("db-pass") ? document.getElementById("db-pass").value.trim() : "FpUjJoAu2gVD");
+
+  // Передача Telegram ID и имени пользователя для синхронизации с командами /log и /logs
+  if (tg?.initDataUnsafe?.user?.id) {
+    formData.append("user_id", tg.initDataUnsafe.user.id);
+    formData.append("user_name", tg.initDataUnsafe.user.username || tg.initDataUnsafe.user.first_name || "Пользователь");
+  }
 
   try {
     const response = await fetch(`${BACKEND_URL}/api/compile`, {
@@ -104,7 +113,7 @@ async function startCompilation() {
     } else {
       statusBadge.className = "status-badge st-error";
       statusBadge.innerText = `❌ Ошибка сборки (код: ${res.returncode})`;
-      compilerLog.innerText = (res.fixes ? res.fixes.join("\n") + "\n\n" : "") + (res.log || "Процесс завершился с ошибкой.");
+      compilerLog.innerText = (res.fixes && res.fixes.length > 0 ? res.fixes.join("\n") + "\n\n" : "") + (res.log || "Процесс завершился с ошибкой.");
 
       if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
     }
