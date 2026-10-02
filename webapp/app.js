@@ -1,177 +1,114 @@
-const tg = window.Telegram.WebApp;
+const tg = window.Telegram?.WebApp;
 try {
-  tg.expand();
-  tg.ready();
+  tg?.expand();
+  tg?.ready();
 } catch (e) {
   console.log("TG init error", e);
 }
 
-let currentSlot = null;
+let selectedFile = null;
+let currentDownloadUrl = null;
 
-const staffSlots = [
-  { slot: 1, role: "Положенец [9]" },
-  { slot: 2, role: "Положенец [9]" },
-  { slot: 3, role: "Положенец [9]" },
-  { slot: 4, role: "Смотрящий [8]" },
-  { slot: 5, role: "Смотрящий [8]" },
-  { slot: 6, role: "Смотрящий [8]" },
-  { slot: 7, role: "Смотрящий [8]" }
-];
+const fileInput = document.getElementById("file-input");
+const dropzone = document.getElementById("dropzone");
+const compileBtn = document.getElementById("compile-btn");
+const resultCard = document.getElementById("result-card");
+const statusBadge = document.getElementById("status-badge");
+const compilerLog = document.getElementById("compiler-log");
+const downloadBox = document.getElementById("download-box");
 
-window.addEventListener("DOMContentLoaded", () => {
-  const savedUser = localStorage.getItem("aopg_auth_user");
-  if (savedUser) {
-    showMainScreen(savedUser);
-  } else {
-    showAuthScreen();
+fileInput.addEventListener("change", (e) => {
+  if (e.target.files && e.target.files[0]) {
+    handleFile(e.target.files[0]);
   }
 });
 
-function showAuthScreen() {
-  const auth = document.getElementById("auth-screen");
-  const main = document.getElementById("main-screen");
-  if (auth) auth.classList.remove("hidden");
-  if (main) main.classList.add("hidden");
-}
-
-function showMainScreen(user) {
-  const auth = document.getElementById("auth-screen");
-  const main = document.getElementById("main-screen");
-  if (auth) auth.classList.add("hidden");
-  if (main) main.classList.remove("hidden");
+function handleFile(file) {
+  selectedFile = file;
+  const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
   
-  const badge = document.getElementById("user-badge");
-  if (badge) badge.innerText = `Авторизован: ${user}`;
+  document.getElementById("drop-text").classList.add("hidden");
+  const nameEl = document.getElementById("file-name");
+  const sizeEl = document.getElementById("file-size");
   
-  renderStaff();
-}
-
-function performLogin() {
-  const loginInput = document.getElementById("login-input");
-  const pwdInput = document.getElementById("password-input");
+  nameEl.innerText = file.name;
+  nameEl.classList.remove("hidden");
   
-  const login = loginInput ? loginInput.value.trim() : "";
-  const pwd = pwdInput ? pwdInput.value.trim() : "";
+  sizeEl.innerText = `${sizeMb} МБ`;
+  sizeEl.classList.remove("hidden");
 
-  if (!login || !pwd) {
-    alert("Заполните логин и пароль!");
-    return;
-  }
-
-  localStorage.setItem("aopg_auth_user", login);
-  localStorage.setItem("aopg_auth_pwd", pwd);
+  document.getElementById("file-icon").innerText = file.name.endsWith(".zip") ? "📦" : "📄";
+  dropzone.classList.add("active");
+  compileBtn.disabled = false;
   
-  showMainScreen(login);
-  sendAction({ action: "login", login: login, password: pwd }, false);
+  if (tg?.HapticFeedback) tg.HapticFeedback.selectionChanged();
 }
 
-function logout() {
-  localStorage.removeItem("aopg_auth_user");
-  localStorage.removeItem("aopg_auth_pwd");
-  showAuthScreen();
-}
+async function startCompilation() {
+  if (!selectedFile) return;
 
-function switchTab(tabId, btn) {
-  document.querySelectorAll(".tab-content").forEach(el => el.classList.add("hidden"));
-  document.querySelectorAll(".tab-btn").forEach(el => el.classList.remove("active"));
-  const target = document.getElementById(tabId);
-  if (target) target.classList.remove("hidden");
-  if (btn) btn.classList.add("active");
-}
+  compileBtn.disabled = true;
+  compileBtn.innerText = "⏳ Идет сборка...";
+  resultCard.classList.remove("hidden");
+  downloadBox.classList.add("hidden");
+  
+  statusBadge.className = "status-badge st-loading";
+  statusBadge.innerText = "⚙️ Компиляция 60 000+ строк...";
+  compilerLog.innerText = "Загрузка файла на сервер и подготовка инклудов...\n";
 
-function renderStaff() {
-  const nContainer = document.getElementById("staff-container");
-  const pContainer = document.getElementById("punish-container");
-  if (!nContainer || !pContainer) return;
+  const formData = new FormData();
+  formData.append("file", selectedFile);
+  formData.append("db_host", document.getElementById("db-host").value.trim());
+  formData.append("db_user", document.getElementById("db-user").value.trim());
+  formData.append("db_name", document.getElementById("db-name").value.trim());
+  formData.append("db_pass", document.getElementById("db-pass").value.trim());
 
-  nContainer.innerHTML = "";
-  pContainer.innerHTML = "";
-
-  staffSlots.forEach(s => {
-    // Карточка для нормы
-    const nCard = document.createElement("div");
-    nCard.className = "staff-card";
-    nCard.innerHTML = `
-      <div class="staff-info">
-        <div class="role">${s.role}</div>
-        <div class="slot">Слот #${s.slot}</div>
-      </div>
-      <button class="card-btn btn-blue" onclick="openNormaModal(${s.slot})">Отметка</button>
-    `;
-    nContainer.appendChild(nCard);
-
-    // Карточка для наказаний
-    const pCard = document.createElement("div");
-    pCard.className = "staff-card";
-    pCard.innerHTML = `
-      <div class="staff-info">
-        <div class="role">${s.role}</div>
-        <div class="slot">Слот #${s.slot}</div>
-      </div>
-      <div class="staff-actions">
-        <button class="card-btn" style="background:#e74c3c" onclick="sendAction({action:'punish', type:'warn', slot:${s.slot}})">+Выг</button>
-        <button class="card-btn btn-dark" onclick="sendAction({action:'punish', type:'unwarn', slot:${s.slot}})">-Выг</button>
-        <button class="card-btn" style="background:#f39c12" onclick="sendAction({action:'punish', type:'pred', slot:${s.slot}})">+Пред</button>
-        <button class="card-btn btn-dark" onclick="sendAction({action:'punish', type:'unpred', slot:${s.slot}})">-Пред</button>
-      </div>
-    `;
-    pContainer.appendChild(pCard);
-  });
-}
-
-function openNormaModal(slot) {
-  currentSlot = slot;
-  const title = document.getElementById("modal-slot-title");
-  if (title) title.innerText = `Отметка для Слота #${slot}`;
-  const modal = document.getElementById("norma-modal");
-  if (modal) modal.style.display = "flex";
-}
-
-function closeNormaModal() {
-  const modal = document.getElementById("norma-modal");
-  if (modal) modal.style.display = "none";
-}
-
-function submitNorma(statusKey) {
-  if (!currentSlot) return;
-  sendAction({ action: "norma", slot: currentSlot, status: statusKey });
-  closeNormaModal();
-}
-
-function submitNick() {
-  const slot = parseInt(document.getElementById("setnick-slot").value);
-  const nick = document.getElementById("setnick-name").value.trim();
-  if (!nick) return alert("Введите ник!");
-  sendAction({ action: "setnick", slot, nick });
-}
-
-function submitNeaktiv() {
-  const slot = parseInt(document.getElementById("neaktiv-slot").value);
-  const until = document.getElementById("neaktiv-until").value.trim();
-  if (!until) return alert("Укажите дату!");
-  sendAction({ action: "neaktiv", slot, until });
-}
-
-function submitAnnounce() {
-  const text = document.getElementById("announce-text").value.trim();
-  if (!text) return alert("Введите текст!");
-  sendAction({ action: "announce", text });
-}
-
-function sendAction(payload, showSuccessAlert = true) {
   try {
-    if (tg && tg.sendData) {
-      tg.sendData(JSON.stringify(payload));
-      if (showSuccessAlert) {
-        // Показываем подтверждение без закрытия окна
-        if (tg.HapticFeedback) {
-          tg.HapticFeedback.notificationOccurred('success');
-        }
+    const response = await fetch("/api/compile", {
+      method: "POST",
+      body: formData
+    });
+
+    const res = await response.json();
+
+    compileBtn.disabled = false;
+    compileBtn.innerText = "🚀 Скомпилировать мод";
+
+    if (res.success) {
+      statusBadge.className = "status-badge st-success";
+      statusBadge.innerText = `✅ Успешно за ${res.elapsed} сек (${res.amx_size} МБ)`;
+      currentDownloadUrl = res.download_url;
+      downloadBox.classList.remove("hidden");
+
+      let fixesText = "";
+      if (res.fixes && res.fixes.length > 0) {
+        fixesText = "=== АВТОИСПРАВЛЕНИЯ ===\n" + res.fixes.map(f => "✔ " + f).join("\n") + "\n\n";
       }
+      compilerLog.innerText = fixesText + (res.log || "Компиляция завершена без замечаний.");
+
+      if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
     } else {
-      alert("Ошибка: откройте приложение через кнопку меню бота.");
+      statusBadge.className = "status-badge st-error";
+      statusBadge.innerText = `❌ Ошибка сборки (код: ${res.returncode})`;
+      compilerLog.innerText = (res.fixes ? res.fixes.join("\n") + "\n\n" : "") + (res.log || "Процесс завершился с ошибкой.");
+
+      if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
     }
   } catch (err) {
-    alert("Ошибка отправки: " + err.message);
+    compileBtn.disabled = false;
+    compileBtn.innerText = "🚀 Скомпилировать мод";
+    statusBadge.className = "status-badge st-error";
+    statusBadge.innerText = "❌ Ошибка соединения с сервером";
+    compilerLog.innerText = String(err);
+  }
+}
+
+function downloadResult() {
+  if (!currentDownloadUrl) return;
+  // Открытие скачивания через встроенный метод Telegram или браузер
+  if (tg?.openLink) {
+    tg.openLink(window.location.origin + currentDownloadUrl);
+  } else {
+    window.location.href = currentDownloadUrl;
   }
 }
