@@ -1,11 +1,27 @@
 import asyncio
 import os
+import re
+import resource
+import shutil
 import tempfile
 import time
 import zipfile
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile, BufferedInputFile
+
+# Снятие системного лимита стека операционной системы (защита от SIGSEGV / кода -11)
+def set_unlimited_stack():
+    try:
+        resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    except Exception:
+        try:
+            _, hard = resource.getrlimit(resource.RLIMIT_STACK)
+            resource.setrlimit(resource.RLIMIT_STACK, (hard, hard))
+        except Exception:
+            pass
+
+set_unlimited_stack()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -14,15 +30,11 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Путь к системным инклудам внутри контейнера (/app/include)
 INCLUDE_DIR = os.path.abspath("include")
-
-# Словарь для хранения последних логов пользователей: user_id -> dict
 user_logs: dict[int, dict] = {}
 
 
 def safe_decode(b: bytes) -> str:
-    """Безопасное декодирование вывода компилятора."""
     if not b:
         return ""
     for enc in ("utf-8", "cp1251", "cp866", "latin-1"):
@@ -50,11 +62,7 @@ async def log_handler(message: Message):
     data = user_logs.get(user_id)
 
     if not data:
-        await message.reply(
-            "ℹ️ У вас пока нет сохранённых логов компиляции.\n"
-            "Отправьте файл `.pwn` или архив `.zip`, а затем вызовите `/log`.",
-            parse_mode="Markdown"
-        )
+        await message.reply("ℹ️ У вас пока нет сохранённых логов компиляции.")
         return
 
     report_header = (
@@ -78,18 +86,11 @@ async def log_handler(message: Message):
     )
 
     if len(full_log_text) <= 3000:
-        await message.reply(
-            f"{report_header}\n```\n{full_log_text}\n```",
-            parse_mode="Markdown"
-        )
+        await message.reply(f"{report_header}\n```\n{full_log_text}\n```", parse_mode="Markdown")
     else:
         file_data = full_log_text.encode("utf-8")
         doc_file = BufferedInputFile(file_data, filename=f"compile_log_{data['target_file']}.txt")
-        await message.reply_document(
-            document=doc_file,
-            caption=report_header,
-            parse_mode="Markdown"
-        )
+        await message.reply_document(document=doc_file, caption=report_header, parse_mode="Markdown")
 
 
 @dp.message(F.document)
@@ -106,7 +107,6 @@ async def handle_compilation(message: Message):
     start_time = time.time()
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Убираем пробелы из имени файла во избежание сбоев в bash/pawncc
         clean_file_name = raw_file_name.replace(" ", "_")
         download_path = os.path.join(tmpdir, clean_file_name)
 
@@ -121,7 +121,6 @@ async def handle_compilation(message: Message):
         found_include_dirs = set()
         extract_dir = os.path.join(tmpdir, "extracted")
 
-        # 1. Если прислан ZIP-архив
         if file_name.endswith(".zip"):
             os.makedirs(extract_dir, exist_ok=True)
             try:
@@ -149,14 +148,13 @@ async def handle_compilation(message: Message):
                         except OSError:
                             f_size = 0
 
-                        # Приоритет: gamemodes/new.pwn получает высший балл
                         score = f_size
                         pwn_lower = full_pwn_path.lower()
                         if "gamemode" in pwn_lower:
                             score += 100_000_000
                         if f.lower() in ("new.pwn", "main.pwn", "mode.pwn"):
                             score += 50_000_000
-                        if "include" in pwn_lower or "map" in pwn_lower or "filterscripts" in pwn_lower:
+                        if "include" in pwn_lower or "map" in pwn_lower:
                             score -= 10_000_000
 
                         pwn_candidates.append((full_pwn_path, score))
@@ -165,19 +163,55 @@ async def handle_compilation(message: Message):
                 await status_msg.edit_text("❌ В архиве не найден файл исходного кода `.pwn`.")
                 return
 
-            # Выбираем самый приоритетный файл
             pwn_candidates.sort(key=lambda x: x[1], reverse=True)
             src_path = pwn_candidates[0][0]
-
-        # 2. Если прислан одиночный .pwn
         else:
             src_path = download_path
 
-        base_name = os.path.splitext(os.path.basename(src_path))[0]
-        out_path = os.path.join(tmpdir, f"{base_name}.amx")
         pwn_dir = os.path.dirname(src_path)
 
-        # Собираем все пути к библиотекам
+        # Автоматическое исправление синтаксиса и путей инклудов прямо в исходнике
+        try:
+            with open(src_path, "rb") as f:
+                raw_bytes = f.read()
+            enc = "utf-8"
+            for test_enc in ("utf-8", "cp1251", "latin-1"):
+                try:
+                    code_str = raw_bytes.decode(test_enc)
+                    enc = test_enc
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                code_str = raw_bytes.decode("utf-8", errors="replace")
+
+            # Закрытие незакрытых кавычек в строках настроек
+            code_str = re.sub(r'(#define\s+MYSQL_PASS\s+"[^"\r\n]+)(\r?\n)', r'\1"\2', code_str)
+            # Нормализация относительных путей инклудов (../include/...)
+            code_str = re.sub(r'#include\s+[<"]\.\./include/system/([^>"]+)[>"]', r'#include <system/\1>', code_str)
+            code_str = re.sub(r'#include\s+[<"]\.\./include/([^>"]+)[>"]', r'#include <\1>', code_str)
+            code_str = re.sub(r'#include\s+[<"]\.\.\\include\\([^>"]+)[>"]', r'#include <\1>', code_str)
+
+            with open(src_path, "w", encoding=enc, errors="replace") as f:
+                f.write(code_str)
+        except Exception:
+            pass
+
+        # Создание символических ссылок для поддержки обращений к ../include
+        parent_dir = os.path.dirname(pwn_dir)
+        for inc_d in list(found_include_dirs):
+            try:
+                os.symlink(inc_d, os.path.join(parent_dir, "include"))
+            except OSError:
+                pass
+            try:
+                os.symlink(inc_d, os.path.join(tmpdir, "include"))
+            except OSError:
+                pass
+
+        base_name = os.path.splitext(os.path.basename(src_path))[0]
+        out_path = os.path.join(tmpdir, f"{base_name}.amx")
+
         include_args = [
             f"-i{pwn_dir}",
             f"-i{extract_dir}" if file_name.endswith(".zip") else f"-i{tmpdir}"
@@ -187,15 +221,16 @@ async def handle_compilation(message: Message):
         if os.path.exists(INCLUDE_DIR):
             include_args.append(f"-i{INCLUDE_DIR}")
 
-        # Параметры pawncc (с повышенным объемом памяти для тяжелых модов)
+        # Безопасные флаги: -O0 (без вылета оптимизатора), -d2 (отладка без переполнения), строгие правила
         cmd = [
             "pawncc",
             src_path,
             f"-o{out_path}",
             *include_args,
-            "-O1",
-            "-d3",
-            "-;+"
+            "-O0",
+            "-d2",
+            "-;+",
+            "-(+"
         ]
 
         try:
@@ -203,12 +238,13 @@ async def handle_compilation(message: Message):
                 *cmd,
                 cwd=pwn_dir,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                preexec_fn=set_unlimited_stack
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180.0)
         except asyncio.TimeoutError:
             process.kill()
-            await status_msg.edit_text("❌ Ошибка: Время ожидания компиляции превышено (120 сек).")
+            await status_msg.edit_text("❌ Ошибка: Время ожидания компиляции превышено (180 сек).")
             return
         except Exception as e:
             await status_msg.edit_text(f"❌ Ошибка вызова компилятора: {e}")
@@ -225,7 +261,6 @@ async def handle_compilation(message: Message):
             and process.returncode == 0
         )
 
-        # Сохраняем результат для команды /log
         user_logs[message.from_user.id] = {
             "input_file": raw_file_name,
             "target_file": os.path.basename(src_path),
@@ -270,3 +305,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
