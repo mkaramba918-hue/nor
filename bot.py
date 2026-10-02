@@ -922,12 +922,6 @@ async def handle_document(message: Message):
                 parse_mode="Markdown"
             )
         else:
-            err_box = out_log[:3200] if out_log else f"Процесс завершился с кодом {proc.returncode}"
-            await status_msg.edit_text(
-                f"❌ **Ошибка сборки (`{os.path.basename(src_path)}`):**\n"
-                f"```\n{err_box}\n"
-            )
-        else:
             COMPILE_STATS["failed"] += 1
             err_box = out_log[:3200] if out_log else f"Процесс завершился с кодом {proc.returncode}"
             await status_msg.edit_text(
