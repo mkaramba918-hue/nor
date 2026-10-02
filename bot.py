@@ -33,12 +33,36 @@ PORT = int(os.getenv("PORT", 8080))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Путь к Windows-компилятору внутри контейнера
-PAWNCC_EXE = "/app/compiler/bin/pawncc.exe"
-SYSTEM_INCLUDE = "/app/compiler/include"
 STORAGE_DIR = "/tmp/amx_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 user_logs: dict[int, dict] = {}
+
+
+def get_pawncc_exe() -> str:
+    """Гарантированный поиск бинарника pawncc.exe внутри контейнера."""
+    candidates = [
+        "/app/compiler/bin/pawncc.exe",
+        "/app/compiler/pawncc.exe"
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+
+    if os.path.exists("/app/compiler"):
+        for root, _, files in os.walk("/app/compiler"):
+            if "pawncc.exe" in files:
+                return os.path.join(root, "pawncc.exe")
+
+    return "/app/compiler/bin/pawncc.exe"
+
+
+def get_system_include() -> str:
+    """Гарантированный поиск папки системных инклудов."""
+    candidates = ["/app/compiler/include", "/app/include"]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return "/app/compiler/include"
 
 
 def safe_decode(b: bytes) -> str:
@@ -96,7 +120,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
             code = re.sub(r'#define\s+MYSQL_PASS\s+.*', f'#define MYSQL_PASS      "{db_pass}"', code)
             fixes.append("Параметры MySQL приведены к заданным настройкам")
 
-        # 3. Нормализация относительных путей
+        # 3. Нормализация путей инклудов
         before = code
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\](system[/\\][^>"]+)[>"]', r'#include <\1>', code)
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\]([^>"]+)[>"]', r'#include <\1>', code)
@@ -188,7 +212,8 @@ async def api_compile_handler(request):
                     if f.lower().endswith(".pwn"):
                         full_pwn = os.path.join(root, f)
                         score = os.path.getsize(full_pwn)
-                        if "gamemode" in full_pwn.lower(): score += 100_000_000
+                        if "gamemode" in full_pwn.lower():
+                            score += 100_000_000
                         pwn_candidates.append((full_pwn, score))
 
             if not pwn_candidates:
@@ -201,7 +226,7 @@ async def api_compile_handler(request):
 
         pwn_dir = os.path.dirname(src_path)
 
-        # Подтягиваем все библиотеки и модули к исходнику
+        # Подтягиваем все .inc и вспомогательные .pwn к исходнику
         if filename.lower().endswith(".zip"):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
@@ -210,28 +235,34 @@ async def api_compile_handler(request):
                         src_f = os.path.join(root, f)
                         flat_d = os.path.join(pwn_dir, f)
                         if not os.path.exists(flat_d):
-                            try: shutil.copy2(src_f, flat_d)
-                            except Exception: pass
+                            try:
+                                shutil.copy2(src_f, flat_d)
+                            except Exception:
+                                pass
                         if "system" in root.lower():
                             sys_d = os.path.join(pwn_dir, "system")
                             os.makedirs(sys_d, exist_ok=True)
                             sys_dest = os.path.join(sys_d, f)
                             if not os.path.exists(sys_dest):
-                                try: shutil.copy2(src_f, sys_dest)
-                                except Exception: pass
+                                try:
+                                    shutil.copy2(src_f, sys_dest)
+                                except Exception:
+                                    pass
 
         fixes = auto_repair_source_code(src_path, db_host, db_user, db_name, db_pass)
         base_name = os.path.splitext(os.path.basename(src_path))[0]
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
-        include_args = [f"-i{d}" for d in all_subdirs]
-        if os.path.exists(SYSTEM_INCLUDE):
-            include_args.append(f"-i{SYSTEM_INCLUDE}")
+        pawncc_path = get_pawncc_exe()
+        sys_include = get_system_include()
 
-        # Запуск официального Windows-компилятора через Wine
+        include_args = [f"-i{d}" for d in all_subdirs]
+        if os.path.exists(sys_include):
+            include_args.append(f"-i{sys_include}")
+
         cmd = [
             "wine",
-            PAWNCC_EXE,
+            pawncc_path,
             src_path,
             f"-o{out_amx}",
             *include_args,
@@ -241,10 +272,18 @@ async def api_compile_handler(request):
             "-;+"
         ]
 
+        wine_env = os.environ.copy()
+        wine_env["WINEDEBUG"] = "-all"
+        wine_env["WINEARCH"] = "win32"
+        wine_env["WINEPREFIX"] = "/root/.wine"
+        wine_env["XDG_RUNTIME_DIR"] = "/tmp"
+        wine_env["PATH"] = f"{os.path.dirname(pawncc_path)}:{wine_env.get('PATH', '')}"
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=pwn_dir,
+                env=wine_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -295,7 +334,7 @@ async def api_download_handler(request):
                 "Access-Control-Allow-Origin": "*"
             }
         )
-    return web.Response(text="Файл устарел или не найден", status=404)
+    return web.Response(text="Файл не найден", status=404)
 
 
 async def start_web_server():
@@ -332,8 +371,8 @@ async def start_handler(message: Message):
     )
     await message.answer(
         "👋 **Pawn Compiler Bot (Windows Wine Engine)**\n\n"
-        "• Нажмите **«⚡ Открыть Web-компилятор»**, чтобы скомпилировать мод через веб-интерфейс.\n"
-        "• Или отправьте архив `.zip` прямо в чат.",
+        "• Нажмите **«⚡ Открыть Web-компилятор»**, чтобы запустить компиляцию в Web App.\n"
+        "• Либо отправьте архив `.zip` прямо в этот чат.",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
@@ -372,7 +411,8 @@ async def handle_document(message: Message):
                     if f.lower().endswith(".pwn"):
                         full_pwn = os.path.join(root, f)
                         score = os.path.getsize(full_pwn)
-                        if "gamemode" in full_pwn.lower(): score += 100_000_000
+                        if "gamemode" in full_pwn.lower():
+                            score += 100_000_000
                         pwn_candidates.append((full_pwn, score))
 
             if not pwn_candidates:
@@ -395,27 +435,34 @@ async def handle_document(message: Message):
                         src_f = os.path.join(root, f)
                         dest = os.path.join(pwn_dir, f)
                         if not os.path.exists(dest):
-                            try: shutil.copy2(src_f, dest)
-                            except Exception: pass
+                            try:
+                                shutil.copy2(src_f, dest)
+                            except Exception:
+                                pass
                         if "system" in root.lower():
                             sys_d = os.path.join(pwn_dir, "system")
                             os.makedirs(sys_d, exist_ok=True)
                             sys_dest = os.path.join(sys_d, f)
                             if not os.path.exists(sys_dest):
-                                try: shutil.copy2(src_f, sys_dest)
-                                except Exception: pass
+                                try:
+                                    shutil.copy2(src_f, sys_dest)
+                                except Exception:
+                                    pass
 
         fixes = auto_repair_source_code(src_path)
         base_name = os.path.splitext(os.path.basename(src_path))[0]
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
+        pawncc_path = get_pawncc_exe()
+        sys_include = get_system_include()
+
         include_args = [f"-i{d}" for d in all_subdirs]
-        if os.path.exists(SYSTEM_INCLUDE):
-            include_args.append(f"-i{SYSTEM_INCLUDE}")
+        if os.path.exists(sys_include):
+            include_args.append(f"-i{sys_include}")
 
         cmd = [
             "wine",
-            PAWNCC_EXE,
+            pawncc_path,
             src_path,
             f"-o{out_amx}",
             *include_args,
@@ -425,10 +472,18 @@ async def handle_document(message: Message):
             "-;+"
         ]
 
+        wine_env = os.environ.copy()
+        wine_env["WINEDEBUG"] = "-all"
+        wine_env["WINEARCH"] = "win32"
+        wine_env["WINEPREFIX"] = "/root/.wine"
+        wine_env["XDG_RUNTIME_DIR"] = "/tmp"
+        wine_env["PATH"] = f"{os.path.dirname(pawncc_path)}:{wine_env.get('PATH', '')}"
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=pwn_dir,
+                env=wine_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
