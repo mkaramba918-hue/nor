@@ -1,7 +1,6 @@
 import asyncio
 import os
 import re
-import resource
 import shutil
 import tempfile
 import time
@@ -20,34 +19,23 @@ from aiogram.types import (
     WebAppInfo
 )
 
-# 1. Снятие лимита стека ядра Linux (защита от вылета памяти -11)
-def set_unlimited_stack():
-    try:
-        resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
-    except Exception:
-        try:
-            _, hard = resource.getrlimit(resource.RLIMIT_STACK)
-            resource.setrlimit(resource.RLIMIT_STACK, (hard, hard))
-        except Exception:
-            pass
-
-set_unlimited_stack()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("Переменная окружения BOT_TOKEN не задана!")
+    raise ValueError("Переменная BOT_TOKEN не установлена в настройках Railway!")
 
 RAILWAY_STATIC_URL = os.getenv("RAILWAY_STATIC_URL")
 if RAILWAY_STATIC_URL and not RAILWAY_STATIC_URL.startswith("http"):
     WEBAPP_URL = f"https://{RAILWAY_STATIC_URL}"
 else:
-    WEBAPP_URL = os.getenv("WEBAPP_URL", "https://your-app.up.railway.app")
+    WEBAPP_URL = os.getenv("WEBAPP_URL", "https://your-domain.up.railway.app")
 
 PORT = int(os.getenv("PORT", 8080))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-INCLUDE_DIR = os.path.abspath("include")
+# Путь к Windows-компилятору внутри контейнера
+PAWNCC_EXE = "/app/compiler/bin/pawncc.exe"
+SYSTEM_INCLUDE = "/app/compiler/include"
 STORAGE_DIR = "/tmp/amx_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 user_logs: dict[int, dict] = {}
@@ -68,30 +56,30 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
     fixes = []
     try:
         with open(file_path, "rb") as f:
-            raw_bytes = f.read()
+            raw = f.read()
 
         enc = "utf-8"
-        for test_enc in ("utf-8", "cp1251", "latin-1"):
+        for t_enc in ("utf-8", "cp1251", "latin-1"):
             try:
-                code = raw_bytes.decode(test_enc)
-                enc = test_enc
+                code = raw.decode(t_enc)
+                enc = t_enc
                 break
             except UnicodeDecodeError:
                 continue
         else:
-            code = raw_bytes.decode("utf-8", errors="replace")
+            code = raw.decode("utf-8", errors="replace")
 
         # 1. Закрытие незакрытых кавычек
-        def fix_quotes(match):
-            line = match.group(0)
-            if line.count('"') % 2 != 0:
-                fixes.append(f"Закрыта незакрытая кавычка: `{line.strip()[:35]}...`")
-                return line + '"'
-            return line
+        def fix_quotes(m):
+            l = m.group(0)
+            if l.count('"') % 2 != 0:
+                fixes.append(f"Закрыта незакрытая кавычка: `{l.strip()[:35]}...`")
+                return l + '"'
+            return l
 
         code = re.sub(r'^#define\s+.*', fix_quotes, code, flags=re.MULTILINE)
 
-        # 2. Установка параметров базы данных
+        # 2. Настройки подключения HostGTA
         mysql_block = (
             f'#define MYSQL_HOST      "{db_host}"\n'
             f'#define MYSQL_USER      "{db_user}"\n'
@@ -100,7 +88,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
         )
         if re.search(r'#if\s+defined\s+LAN_MODE[\s\S]*?#endif', code):
             code = re.sub(r'#if\s+defined\s+LAN_MODE[\s\S]*?#endif', mysql_block, code)
-            fixes.append(f"Обновлен блок MySQL под HostGTA ({db_host}, {db_user})")
+            fixes.append("Обновлен блок MySQL под параметры HostGTA")
         elif re.search(r'#define\s+MYSQL_PASS', code):
             code = re.sub(r'#define\s+MYSQL_HOST\s+.*', f'#define MYSQL_HOST      "{db_host}"', code)
             code = re.sub(r'#define\s+MYSQL_USER\s+.*', f'#define MYSQL_USER      "{db_user}"', code)
@@ -108,48 +96,67 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
             code = re.sub(r'#define\s+MYSQL_PASS\s+.*', f'#define MYSQL_PASS      "{db_pass}"', code)
             fixes.append("Параметры MySQL приведены к заданным настройкам")
 
-        # 3. Нормализация относительных путей ../include
-        before_inc = code
+        # 3. Нормализация относительных путей
+        before = code
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\](system[/\\][^>"]+)[>"]', r'#include <\1>', code)
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\]([^>"]+)[>"]', r'#include <\1>', code)
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])+([^>"]+)[>"]', r'#include <\1>', code)
-        if code != before_inc:
+        if code != before:
             fixes.append("Нормализованы пути `#include`: устранены прыжки `../`")
 
         # 4. Отключение падающей прагмы
         if re.search(r'#pragma\s+disablerecursion', code):
-            code = re.sub(r'(#pragma\s+disablerecursion)', r'// \1 /* Отключено для защиты от Segfault */', code)
+            code = re.sub(r'(#pragma\s+disablerecursion)', r'// \1 /* Отключено для защиты от сбоя */', code)
             fixes.append("Отключен `#pragma disablerecursion`")
 
-        # 5. Проверка точки входа
+        # 5. Точка входа main()
         if not re.search(r'\bmain\s*\(\s*\)', code):
             code += "\n\nmain() {}\n"
             fixes.append("Добавлена точка входа `main()`")
 
-        # 6. Закрытие комментариев
         if code.count("/*") > code.count("*/"):
             code += "\n*/\n" * (code.count("/*") - code.count("*/"))
-            fixes.append("Закрыт незакрытый комментарий /* ... */")
+            fixes.append("Закрыт незакрытый комментарий /* */")
 
         with open(file_path, "w", encoding=enc, errors="replace") as f:
             f.write(code)
 
     except Exception as e:
-        fixes.append(f"Предупреждение анализатора: {e}")
+        fixes.append(f"Предупреждение: {e}")
 
     return fixes
 
 
 # ==============================================================================
-#             REST API ДЛЯ WEB MINI APP (/api/compile, /api/download)
+#                  API ДЛЯ MINI APP (CORS + ЛИМИТ ДО 100 МБ)
 # ==============================================================================
 
+def cors_response(data, status=200):
+    return web.json_response(
+        data,
+        status=status,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+async def options_handler(request):
+    return web.Response(
+        status=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 async def api_compile_handler(request):
-    """Принимает файл и настройки из Mini App, компилирует и возвращает JSON."""
     post_data = await request.post()
     upload_field = post_data.get("file")
     if not upload_field:
-        return web.json_response({"success": False, "log": "Файл не передан!"}, status=400)
+        return cors_response({"success": False, "log": "Файл не передан!"}, status=400)
 
     db_host = post_data.get("db_host", "127.0.0.1")
     db_user = post_data.get("db_user", "user909028")
@@ -181,13 +188,11 @@ async def api_compile_handler(request):
                     if f.lower().endswith(".pwn"):
                         full_pwn = os.path.join(root, f)
                         score = os.path.getsize(full_pwn)
-                        pwn_l = full_pwn.lower()
-                        if "gamemode" in pwn_l: score += 100_000_000
-                        if f.lower() in ("new.pwn", "main.pwn"): score += 50_000_000
+                        if "gamemode" in full_pwn.lower(): score += 100_000_000
                         pwn_candidates.append((full_pwn, score))
 
             if not pwn_candidates:
-                return web.json_response({"success": False, "log": "В архиве нет файла .pwn!"})
+                return cors_response({"success": False, "log": "В архиве нет файла .pwn!"})
             pwn_candidates.sort(key=lambda x: x[1], reverse=True)
             src_path = pwn_candidates[0][0]
         else:
@@ -196,7 +201,7 @@ async def api_compile_handler(request):
 
         pwn_dir = os.path.dirname(src_path)
 
-        # Копирование всех библиотек к исходнику для предотвращения fatal error 100
+        # Подтягиваем все библиотеки и модули к исходнику
         if filename.lower().endswith(".zip"):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
@@ -220,11 +225,13 @@ async def api_compile_handler(request):
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
         include_args = [f"-i{d}" for d in all_subdirs]
-        if os.path.exists(INCLUDE_DIR):
-            include_args.append(f"-i{INCLUDE_DIR}")
+        if os.path.exists(SYSTEM_INCLUDE):
+            include_args.append(f"-i{SYSTEM_INCLUDE}")
 
+        # Запуск официального Windows-компилятора через Wine
         cmd = [
-            "pawncc",
+            "wine",
+            PAWNCC_EXE,
             src_path,
             f"-o{out_amx}",
             *include_args,
@@ -239,16 +246,14 @@ async def api_compile_handler(request):
                 *cmd,
                 cwd=pwn_dir,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                preexec_fn=set_unlimited_stack
+                stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
-            return web.json_response({"success": False, "log": f"Ошибка вызова компилятора: {e}"})
+            return cors_response({"success": False, "log": f"Ошибка вызова компилятора: {e}"})
 
         elapsed = round(time.time() - start_time, 2)
         out_log = (safe_decode(stdout) + "\n" + safe_decode(stderr)).strip()
-
         is_success = os.path.exists(out_amx) and os.path.getsize(out_amx) > 0 and proc.returncode == 0
 
         if is_success:
@@ -260,7 +265,7 @@ async def api_compile_handler(request):
                 z.write(out_amx, arcname=f"{base_name}.amx")
                 z.write(out_amx, arcname=f"gamemodes/{base_name}.amx")
 
-            return web.json_response({
+            return cors_response({
                 "success": True,
                 "returncode": proc.returncode,
                 "elapsed": elapsed,
@@ -270,7 +275,7 @@ async def api_compile_handler(request):
                 "download_url": f"/api/download/{file_id}"
             })
         else:
-            return web.json_response({
+            return cors_response({
                 "success": False,
                 "returncode": proc.returncode,
                 "elapsed": elapsed,
@@ -280,25 +285,23 @@ async def api_compile_handler(request):
 
 
 async def api_download_handler(request):
-    """Отдает скомпилированный ZIP архив."""
     file_id = request.match_info.get("id")
     target_zip = os.path.join(STORAGE_DIR, f"{file_id}.zip")
     if os.path.exists(target_zip):
-        return web.FileResponse(target_zip, headers={
-            "Content-Disposition": f'attachment; filename="new_amx.zip"'
-        })
+        return web.FileResponse(
+            target_zip,
+            headers={
+                "Content-Disposition": 'attachment; filename="new_amx.zip"',
+                "Access-Control-Allow-Origin": "*"
+            }
+        )
     return web.Response(text="Файл устарел или не найден", status=404)
 
 
-async def root_handler(request):
-    if os.path.exists("webapp/index.html"):
-        return web.HTTPFound("/webapp/index.html")
-    return web.Response(text="Pawn Compiler Web Server Active", status=200)
-
-
 async def start_web_server():
-    app = web.Application(client_max_size=100 * 1024 * 1024)  # До 100 МБ для больших архивов
-    app.router.add_get("/", root_handler)
+    app = web.Application(client_max_size=100 * 1024 * 1024)
+    app.router.add_route("OPTIONS", "/{tail:.*}", options_handler)
+    app.router.add_get("/", lambda r: web.HTTPFound("/webapp/index.html") if os.path.exists("webapp/index.html") else web.Response(text="Pawn Server Active", status=200))
     app.router.add_get("/health", lambda r: web.Response(text="OK", status=200))
     app.router.add_post("/api/compile", api_compile_handler)
     app.router.add_get("/api/download/{id}", api_download_handler)
@@ -311,11 +314,11 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"✔ Web Server Mini App запущен на порту {PORT}")
+    print(f"✔ Web Server запущен на порту {PORT}")
 
 
 # ==============================================================================
-#                      TELEGRAM BOT КОМАНДЫ
+#                      БОТ TELEGRAM
 # ==============================================================================
 
 @dp.message(CommandStart())
@@ -328,36 +331,12 @@ async def start_handler(message: Message):
         resize_keyboard=True
     )
     await message.answer(
-        "👋 **Pawn Web Compiler Bot**\n\n"
-        "• Нажмите кнопку **«⚡ Открыть Web-компилятор»** ниже, чтобы открыть веб-интерфейс прямо в Telegram.\n"
-        "• Или отправьте архив `.zip` прямо сюда в чат для быстрой сборки.",
+        "👋 **Pawn Compiler Bot (Windows Wine Engine)**\n\n"
+        "• Нажмите **«⚡ Открыть Web-компилятор»**, чтобы скомпилировать мод через веб-интерфейс.\n"
+        "• Или отправьте архив `.zip` прямо в чат.",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
-
-
-@dp.message(Command("log", "logs"))
-async def log_handler(message: Message):
-    data = user_logs.get(message.from_user.id)
-    if not data:
-        await message.reply("ℹ️ У вас пока нет сохранённых логов компиляции.")
-        return
-
-    full_log_text = (
-        f"=== ДЕТАЛИ КОМПИЛЯЦИИ ===\n"
-        f"Входной файл: {data['input_file']}\n"
-        f"Исходник: {data['target_file']}\n"
-        f"Код: {data['returncode']} ({data['elapsed']}s)\n\n"
-        f"=== ВЫВОД ПАВН-КОМПИЛЯТОРА ===\n"
-        f"{data['output'] if data['output'] else '(Вывод пуст)'}\n"
-    )
-
-    if len(full_log_text) <= 3000:
-        await message.reply(f"```\n{full_log_text}\n```", parse_mode="Markdown")
-    else:
-        file_data = full_log_text.encode("utf-8")
-        doc_file = BufferedInputFile(file_data, filename="compile_log.txt")
-        await message.reply_document(doc_file)
 
 
 @dp.message(F.document)
@@ -368,7 +347,7 @@ async def handle_document(message: Message):
         await message.reply("⚠️ Отправьте архив `.zip` или файл `.pwn`.")
         return
 
-    status_msg = await message.reply("⏳ Загрузка и компиляция...")
+    status_msg = await message.reply("⏳ Загрузка и компиляция через Wine Windows Engine...")
     start_time = time.time()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -408,7 +387,6 @@ async def handle_document(message: Message):
 
         pwn_dir = os.path.dirname(src_path)
 
-        # Копирование всех инклудов к корнюсходника
         if raw_name.lower().endswith(".zip"):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
@@ -432,11 +410,12 @@ async def handle_document(message: Message):
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
         include_args = [f"-i{d}" for d in all_subdirs]
-        if os.path.exists(INCLUDE_DIR):
-            include_args.append(f"-i{INCLUDE_DIR}")
+        if os.path.exists(SYSTEM_INCLUDE):
+            include_args.append(f"-i{SYSTEM_INCLUDE}")
 
         cmd = [
-            "pawncc",
+            "wine",
+            PAWNCC_EXE,
             src_path,
             f"-o{out_amx}",
             *include_args,
@@ -451,27 +430,16 @@ async def handle_document(message: Message):
                 *cmd,
                 cwd=pwn_dir,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                preexec_fn=set_unlimited_stack
+                stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
-            await status_msg.edit_text(f"❌ Ошибка компилятора: {e}")
+            await status_msg.edit_text(f"❌ Ошибка вызова компилятора: {e}")
             return
 
         elapsed = round(time.time() - start_time, 2)
         out_log = (safe_decode(stdout) + "\n" + safe_decode(stderr)).strip()
         is_success = os.path.exists(out_amx) and os.path.getsize(out_amx) > 0 and proc.returncode == 0
-
-        user_logs[message.from_user.id] = {
-            "input_file": raw_name,
-            "target_file": os.path.basename(src_path),
-            "command": " ".join(cmd),
-            "returncode": proc.returncode,
-            "output": out_log,
-            "elapsed": elapsed,
-            "status": "Успешно ✅" if is_success else "Ошибка ❌",
-        }
 
         if is_success:
             await status_msg.delete()
@@ -483,9 +451,9 @@ async def handle_document(message: Message):
 
             fixes_info = "\n".join([f"• {x}" for x in fixes]) if fixes else "Без правок."
             caption = (
-                f"✅ **Собрано успешно!** ({elapsed} сек)\n"
+                f"✅ **Собрано через Windows Engine!** ({elapsed} сек)\n\n"
                 f"📁 **Размер:** {amx_mb} МБ\n"
-                f"📦 **Внутри архива:** `{base_name}.amx` и `gamemodes/{base_name}.amx`\n\n"
+                f"📦 **Внутри:** `{base_name}.amx` и `gamemodes/{base_name}.amx`\n\n"
                 f"🛠 **Авто-исправления:**\n{fixes_info}"
             )
             await message.reply_document(FSInputFile(zip_out, filename=f"{base_name}_amx.zip"), caption=caption, parse_mode="Markdown")
