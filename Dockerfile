@@ -35,4 +35,4 @@ RUN if [ -f include.zip ]; then \
 
 COPY bot.py .
 
-CMD ["python", "bot.py"]
+CMD sh -c "ulimit -s unlimited && python bot.py"
