@@ -3,16 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>A-OPG | Панель СС</title>
+  <title>Pawn Web Compiler</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {
       --bg: var(--tg-theme-bg-color, #121216);
-      --card-bg: var(--tg-theme-secondary-bg-color, #1c1c24);
+      --card: var(--tg-theme-secondary-bg-color, #1c1c24);
       --text: var(--tg-theme-text-color, #ffffff);
       --hint: var(--tg-theme-hint-color, #8e8e98);
       --accent: var(--tg-theme-button-color, #2f80ed);
       --accent-text: var(--tg-theme-button-text-color, #ffffff);
+      --success: #27ae60;
+      --error: #eb5757;
     }
     * { box-sizing: border-box; }
     body {
@@ -20,259 +22,182 @@
       background: var(--bg);
       color: var(--text);
       margin: 0;
-      padding: 14px;
+      padding: 16px;
       user-select: none;
     }
-    .header { text-align: center; margin-bottom: 14px; }
-    .header h2 { margin: 0 0 4px; font-size: 19px; }
+    .header { text-align: center; margin-bottom: 18px; }
+    .header h2 { margin: 0 0 6px; font-size: 20px; font-weight: 700; }
     .header p { margin: 0; font-size: 13px; color: var(--hint); }
 
-    /* Окно логина */
-    #auth-screen {
-      background: var(--card-bg);
+    .card {
+      background: var(--card);
       border-radius: 14px;
-      padding: 22px 18px;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.3);
-      margin-top: 40px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
     }
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--hint);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Зона выбора файла */
+    .file-dropzone {
+      border: 2px dashed rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 24px 14px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .file-dropzone.active {
+      border-color: var(--accent);
+      background: rgba(47, 128, 237, 0.08);
+    }
+    .file-icon { font-size: 32px; margin-bottom: 8px; }
+    .file-name { font-weight: 600; font-size: 14px; margin-top: 6px; word-break: break-all; }
+    .file-size { font-size: 12px; color: var(--hint); margin-top: 2px; }
+    #file-input { display: none; }
+
+    /* Поля настроек */
+    .input-group { margin-bottom: 10px; }
+    .input-label { font-size: 12px; color: var(--hint); margin-bottom: 4px; display: block; }
     .input-field {
       width: 100%;
-      padding: 12px 14px;
-      margin-bottom: 12px;
+      padding: 11px 13px;
       background: rgba(255,255,255,0.06);
       border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 9px;
+      border-radius: 8px;
       color: var(--text);
-      font-size: 14px;
+      font-size: 13px;
       outline: none;
     }
     .input-field:focus { border-color: var(--accent); }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+    /* Кнопки */
     .btn-main {
       width: 100%;
-      padding: 12px;
+      padding: 14px;
       background: var(--accent);
       color: var(--accent-text);
-      font-weight: 600;
-      font-size: 14px;
+      font-weight: 700;
+      font-size: 15px;
       border: none;
-      border-radius: 9px;
-      cursor: pointer;
-    }
-
-    /* Навигация */
-    .tabs {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 14px;
-      background: rgba(255,255,255,0.05);
-      padding: 4px;
       border-radius: 10px;
-    }
-    .tab-btn {
-      flex: 1;
-      padding: 8px 4px;
-      font-size: 12px;
-      font-weight: 600;
-      background: transparent;
-      border: none;
-      border-radius: 7px;
-      color: var(--hint);
       cursor: pointer;
-    }
-    .tab-btn.active {
-      background: var(--card-bg);
-      color: var(--text);
-    }
-    .staff-list { display: flex; flex-direction: column; gap: 9px; }
-    .staff-card {
-      background: var(--card-bg);
-      border-radius: 11px;
-      padding: 11px 13px;
       display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .staff-info .role {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--hint);
-      text-transform: uppercase;
-    }
-    .staff-info .slot { font-size: 15px; font-weight: bold; margin-top: 2px; }
-    .staff-actions { display: flex; gap: 6px; }
-    .card-btn {
-      padding: 7px 11px;
-      font-size: 12px;
-      font-weight: 600;
-      border: none;
-      border-radius: 7px;
-      cursor: pointer;
-      color: #fff;
-    }
-    .btn-blue { background: var(--accent); }
-    .btn-dark { background: #373843; }
-    .quick-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-top: 14px;
-    }
-    .quick-btn {
-      padding: 10px;
-      border-radius: 9px;
-      border: none;
-      font-size: 12px;
-      font-weight: 600;
-      color: #fff;
-      cursor: pointer;
-    }
-    .modal-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.75);
-      backdrop-filter: blur(4px);
       justify-content: center;
-      align-items: flex-end;
-      z-index: 99;
+      align-items: center;
+      gap: 8px;
+      transition: opacity 0.2s ease;
     }
-    .modal-sheet {
-      background: var(--card-bg);
-      width: 100%;
-      max-width: 500px;
-      border-radius: 18px 18px 0 0;
-      padding: 18px;
-    }
-    .status-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 7px;
+    .btn-main:active { opacity: 0.85; }
+    .btn-main:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-success { background: var(--success); }
+
+    /* Блок статуса и логов */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
       margin-bottom: 12px;
     }
-    .status-btn {
-      padding: 10px 8px;
-      font-size: 12px;
-      font-weight: 600;
-      color: #fff;
-      border: none;
+    .st-waiting { background: rgba(255,255,255,0.08); color: var(--hint); }
+    .st-loading { background: rgba(47, 128, 237, 0.2); color: #5dade2; }
+    .st-success { background: rgba(39, 174, 96, 0.2); color: #2ecc71; }
+    .st-error { background: rgba(235, 87, 87, 0.2); color: #e74c3c; }
+
+    .log-box {
+      background: #09090d;
       border-radius: 8px;
-      cursor: pointer;
-    }
-    .c-norma { background: #27ae60; }
-    .c-overnorma { background: #2f80ed; }
-    .c-natyag { background: #8e44ad; }
-    .c-nonorma { background: #eb5757; }
-    .c-neaktiv { background: #7f8c8d; }
-    .c-new { background: #f2c94c; color: #000; }
-    .c-off { background: #00c0b5; }
-    .c-quest { background: #2c3e50; }
-    .close-btn {
-      width: 100%;
-      background: rgba(255,255,255,0.09);
-      color: var(--text);
-      border: none;
-      padding: 10px;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #d1d5db;
+      max-height: 220px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      border: 1px solid rgba(255,255,255,0.08);
     }
     .hidden { display: none !important; }
   </style>
 </head>
 <body>
 
-  <!-- Экран логина (открыт по умолчанию) -->
-  <div id="auth-screen">
-    <div class="header">
-      <h2>🔐 Авторизация</h2>
-      <p>Введите логин и пароль от следящего</p>
-    </div>
-    <input type="text" id="login-input" class="input-field" placeholder="Логин (например: leader)">
-    <input type="password" id="password-input" class="input-field" placeholder="Пароль">
-    <button class="btn-main" onclick="performLogin()">Войти в панель</button>
+  <div class="header">
+    <h2>⚡ Pawn Web Compiler</h2>
+    <p>Сборка модов SA-MP / CRMP до 100 000+ строк</p>
   </div>
 
-  <!-- Главный экран (скрыт до логина) -->
-  <div id="main-screen" class="hidden">
-    <div class="header">
-      <h2>⚡ A-OPG | Панель СС</h2>
-      <p id="user-badge">Авторизован: ...</p>
+  <!-- Выбор файла -->
+  <div class="card">
+    <div class="card-title">📦 Исходный файл (.zip или .pwn)</div>
+    <div class="file-dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
+      <div class="file-icon" id="file-icon">📁</div>
+      <div id="drop-text" style="font-size: 13px; color: var(--hint);">Нажмите для выбора архива с модом</div>
+      <div class="file-name hidden" id="file-name"></div>
+      <div class="file-size hidden" id="file-size"></div>
     </div>
+    <input type="file" id="file-input" accept=".zip,.pwn">
+  </div>
 
-    <div class="tabs">
-      <button class="tab-btn active" onclick="switchTab('tab-norma', this)">Норма</button>
-      <button class="tab-btn" onclick="switchTab('tab-punish', this)">Наказания</button>
-      <button class="tab-btn" onclick="switchTab('tab-extra', this)">Инструменты</button>
-    </div>
-
-    <div id="tab-norma" class="tab-content">
-      <div class="staff-list" id="staff-container"></div>
-      <div class="quick-grid">
-        <button class="quick-btn" style="background: #27ae60;" onclick="sendAction({action: 'all_norma'})">⚡ Всем норму (+5)</button>
-        <button class="quick-btn" style="background: #2f80ed;" onclick="sendAction({action: 'summary'})">📊 Сводка нормы</button>
+  <!-- Настройки базы HostGTA -->
+  <div class="card">
+    <div class="card-title">🗄️ Настройки MySQL (HostGTA)</div>
+    <div class="grid-2">
+      <div class="input-group">
+        <label class="input-label">Host</label>
+        <input type="text" id="db-host" class="input-field" value="127.0.0.1">
+      </div>
+      <div class="input-group">
+        <label class="input-label">User</label>
+        <input type="text" id="db-user" class="input-field" value="user909028">
       </div>
     </div>
-
-    <div id="tab-punish" class="tab-content hidden">
-      <div class="staff-list" id="punish-container"></div>
-    </div>
-
-    <div id="tab-extra" class="tab-content hidden">
-      <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
-        <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">👤 Сменить ник</div>
-        <select id="setnick-slot" class="input-field">
-          <option value="1">Слот #1 [9]</option>
-          <option value="2">Слот #2 [9]</option>
-          <option value="3">Слот #3 [9]</option>
-          <option value="4">Слот #4 [8]</option>
-          <option value="5">Слот #5 [8]</option>
-          <option value="6">Слот #6 [8]</option>
-          <option value="7">Слот #7 [8]</option>
-        </select>
-        <input type="text" id="setnick-name" class="input-field" placeholder="Nick_Name">
-        <button class="btn-main" onclick="submitNick()">Сохранить ник</button>
+    <div class="grid-2">
+      <div class="input-group">
+        <label class="input-label">Database</label>
+        <input type="text" id="db-name" class="input-field" value="user909028">
       </div>
-
-      <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
-        <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">🏖 Оформить неактив</div>
-        <select id="neaktiv-slot" class="input-field">
-          <option value="1">Слот #1</option>
-          <option value="2">Слот #2</option>
-          <option value="3">Слот #3</option>
-          <option value="4">Слот #4</option>
-          <option value="5">Слот #5</option>
-          <option value="6">Слот #6</option>
-          <option value="7">Слот #7</option>
-        </select>
-        <input type="text" id="neaktiv-until" class="input-field" placeholder="До даты (напр: 18.09)">
-        <button class="btn-main" style="background:#e67e22;" onclick="submitNeaktiv()">Записать неактив (-2)</button>
+      <div class="input-group">
+        <label class="input-label">Password</label>
+        <input type="text" id="db-pass" class="input-field" value="FpUjJoAu2gVD">
       </div>
-
-      <div style="background: var(--card-bg); padding: 12px; border-radius: 10px; margin-bottom: 10px;">
-        <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">📢 Анонс составу</div>
-        <input type="text" id="announce-text" class="input-field" placeholder="Текст объявления">
-        <button class="btn-main" style="background:#8e44ad;" onclick="submitAnnounce()">Отправить анонс</button>
-      </div>
-
-      <button class="btn-main" style="background: #e74c3c; margin-top: 10px;" onclick="logout()">Выйти из профиля</button>
     </div>
   </div>
 
-  <div class="modal-overlay" id="norma-modal">
-    <div class="modal-sheet">
-      <div style="font-size: 15px; font-weight: bold; margin-bottom: 12px; text-align: center;" id="modal-slot-title">Выбор отметки</div>
-      <div class="status-grid">
-        <button class="status-btn c-norma" onclick="submitNorma('norma')">🟩 Норма (+5)</button>
-        <button class="status-btn c-overnorma" onclick="submitNorma('overnorma')">🟦 Перенорма (+8)</button>
-        <button class="status-btn c-natyag" onclick="submitNorma('natyag')">🟪 Натяг (+1)</button>
-        <button class="status-btn c-nonorma" onclick="submitNorma('nonorma')">🟥 Нет нормы (-5)</button>
-        <button class="status-btn c-neaktiv" onclick="submitNorma('neaktiv')">⬜ Неактив (-2)</button>
-        <button class="status-btn c-new" onclick="submitNorma('new_ss')">🟨 Новый СС (Осв)</button>
-        <button class="status-btn c-off" onclick="submitNorma('dayoff')">🔷 Выходной (0)</button>
-        <button class="status-btn c-quest" onclick="submitNorma('question')">⬛ Вопрос (?)</button>
-      </div>
-      <button class="close-btn" onclick="closeNormaModal()">Отмена</button>
+  <!-- Кнопка запуска -->
+  <button class="btn-main" id="compile-btn" onclick="startCompilation()" disabled>
+    🚀 Скомпилировать мод
+  </button>
+
+  <!-- Результат сборки -->
+  <div class="card hidden" id="result-card" style="margin-top: 14px;">
+    <div class="card-title">📊 Результат сборки</div>
+    <div id="status-badge" class="status-badge st-waiting">Готов к работе</div>
+    
+    <div id="download-box" class="hidden" style="margin-bottom: 12px;">
+      <button class="btn-main btn-success" id="download-btn" onclick="downloadResult()">
+        📥 Скачать new.amx (ZIP)
+      </button>
     </div>
+
+    <div class="card-title" style="margin-top: 14px;">Лог компилятора</div>
+    <div class="log-box" id="compiler-log">Лог пока пуст...</div>
   </div>
 
   <script src="app.js"></script>
