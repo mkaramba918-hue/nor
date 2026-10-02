@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import resource
 import shutil
 import tempfile
 import time
@@ -19,6 +20,19 @@ from aiogram.types import (
     WebAppInfo
 )
 
+# Снятие системного лимита стека ядра Linux (защита от вылета памяти -11)
+def set_unlimited_stack():
+    try:
+        resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    except Exception:
+        try:
+            _, hard = resource.getrlimit(resource.RLIMIT_STACK)
+            resource.setrlimit(resource.RLIMIT_STACK, (hard, hard))
+        except Exception:
+            pass
+
+set_unlimited_stack()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("Переменная BOT_TOKEN не установлена в настройках Railway!")
@@ -33,6 +47,8 @@ PORT = int(os.getenv("PORT", 8080))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+PAWNCC_BIN = "/usr/local/bin/pawncc"
+SYSTEM_INCLUDE = "/app/include"
 STORAGE_DIR = "/tmp/amx_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
@@ -40,31 +56,6 @@ BOT_START_TIME = time.time()
 COMPILE_STATS = {"total": 0, "success": 0, "failed": 0}
 compilation_history: list[dict] = []
 user_logs: dict[int, dict] = {}
-
-
-def get_pawncc_exe() -> str:
-    candidates = [
-        "/app/compiler/bin/pawncc.exe",
-        "/app/compiler/pawncc.exe"
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
-
-    if os.path.exists("/app/compiler"):
-        for root, _, files in os.walk("/app/compiler"):
-            if "pawncc.exe" in files:
-                return os.path.join(root, "pawncc.exe")
-
-    return "/app/compiler/bin/pawncc.exe"
-
-
-def get_system_include() -> str:
-    candidates = ["/app/compiler/include", "/app/include"]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
-    return "/app/compiler/include"
 
 
 def safe_decode(b: bytes) -> str:
@@ -94,14 +85,8 @@ def format_uptime(seconds: float) -> str:
     return " ".join(parts)
 
 
-def isolate_cpu():
-    try:
-        os.sched_setaffinity(0, {0, 1})
-    except Exception:
-        pass
-
-
 def add_include_guards_to_files(root_dir: str, exclude_file: str):
+    """Предотвращает зацикливание при вызовах инклудов друг в друга."""
     for root, _, files in os.walk(root_dir):
         for f in files:
             f_l = f.lower()
@@ -147,7 +132,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
         else:
             code = raw.decode("utf-8", errors="replace")
 
-        # Закрытие незакрытых кавычек
+        # 1. Закрытие незакрытых кавычек
         def fix_quotes(m):
             l = m.group(0)
             if l.count('"') % 2 != 0:
@@ -157,7 +142,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
 
         code = re.sub(r'^#define\s+.*', fix_quotes, code, flags=re.MULTILINE)
 
-        # MySQL HostGTA
+        # 2. Настройки подключения HostGTA
         mysql_block = (
             f'#define MYSQL_HOST      "{db_host}"\n'
             f'#define MYSQL_USER      "{db_user}"\n'
@@ -174,7 +159,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
             code = re.sub(r'#define\s+MYSQL_PASS\s+.*', f'#define MYSQL_PASS      "{db_pass}"', code)
             fixes.append("Параметры MySQL приведены к заданным настройкам")
 
-        # Относительные пути
+        # 3. Нормализация относительных путей инклудов
         before = code
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\](system[/\\][^>"]+)[>"]', r'#include <\1>', code)
         code = re.sub(r'#include\s+[<"](?:\.\.[/\\])*include[/\\]([^>"]+)[>"]', r'#include <\1>', code)
@@ -182,14 +167,15 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
         if code != before:
             fixes.append("Нормализованы пути `#include` (убраны `../`)")
 
-        # Защита от краша 0000003A
+        # 4. Восстановление/включение директивы защиты стека
         if re.search(r'//\s*#pragma\s+disablerecursion', code):
             code = re.sub(r'//\s*(#pragma\s+disablerecursion)[^\r\n]*', r'\1', code)
             fixes.append("Восстановлен `#pragma disablerecursion`")
         elif not re.search(r'#pragma\s+disablerecursion', code):
             code = "#pragma disablerecursion\n" + code
-            fixes.append("Включен `#pragma disablerecursion` (защита от вылета памяти)")
+            fixes.append("Включен `#pragma disablerecursion`")
 
+        # 5. Точка входа main()
         if not re.search(r'\bmain\s*\(\s*\)', code):
             code += "\n\nmain() {}\n"
             fixes.append("Добавлена точка входа `main()`")
@@ -313,6 +299,7 @@ async def api_compile_handler(request):
 
         pwn_dir = os.path.dirname(src_path)
 
+        # Полное раскладывание всех .inc и .pwn файлов (включая папку system/)
         if filename.lower().endswith(".zip"):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
@@ -337,12 +324,12 @@ async def api_compile_handler(request):
 
         add_include_guards_to_files(extract_dir if filename.lower().endswith(".zip") else tmpdir, src_path)
 
-        sys_include = get_system_include()
-        if os.path.exists(sys_include):
+        # Копируем системные библиотеки в include
+        if os.path.exists(SYSTEM_INCLUDE):
             local_sys = os.path.join(pwn_dir, "include")
             os.makedirs(local_sys, exist_ok=True)
-            for sf in os.listdir(sys_include):
-                s_path = os.path.join(sys_include, sf)
+            for sf in os.listdir(SYSTEM_INCLUDE):
+                s_path = os.path.join(SYSTEM_INCLUDE, sf)
                 if os.path.isfile(s_path):
                     try:
                         shutil.copy2(s_path, os.path.join(local_sys, sf))
@@ -352,10 +339,7 @@ async def api_compile_handler(request):
 
         fixes = auto_repair_source_code(src_path, db_host, db_user, db_name, db_pass)
         base_name = os.path.splitext(os.path.basename(src_path))[0]
-        src_filename = os.path.basename(src_path)
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
-
-        pawncc_path = get_pawncc_exe()
 
         include_args = ["-i.", "-iinclude", "-isystem"]
         for d in all_subdirs:
@@ -365,12 +349,14 @@ async def api_compile_handler(request):
                     include_args.append(f"-i{rel}")
             except ValueError:
                 pass
+        if os.path.exists(SYSTEM_INCLUDE):
+            include_args.append(f"-i{SYSTEM_INCLUDE}")
 
+        # Прямой запуск нативного Linux Pawn-компилятора
         cmd = [
-            "wine",
-            pawncc_path,
-            src_filename,
-            f"-o{base_name}.amx",
+            PAWNCC_BIN,
+            src_path,
+            f"-o{out_amx}",
             *include_args,
             "-O0",
             "-d0",
@@ -378,28 +364,18 @@ async def api_compile_handler(request):
             "-(+"
         ]
 
-        wine_env = os.environ.copy()
-        wine_env["WINEDEBUG"] = "-all"
-        wine_env["WINEARCH"] = "win32"
-        wine_env["WINEPREFIX"] = "/tmp/wine"
-        wine_env["WINEDLLOVERRIDES"] = "winedbg.exe=d"
-        wine_env["DISPLAY"] = ""
-        wine_env["XDG_RUNTIME_DIR"] = "/tmp"
-        wine_env["PATH"] = f"{os.path.dirname(pawncc_path)}:{wine_env.get('PATH', '')}"
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=pwn_dir,
-                env=wine_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                preexec_fn=isolate_cpu
+                preexec_fn=set_unlimited_stack
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
             err_msg = f"Ошибка вызова компилятора: {e}"
-            save_compilation_record("Web App 🌐", filename, src_filename, "Ошибка ❌", -1, 0.0, err_msg, fixes, user_id)
+            save_compilation_record("Web App 🌐", filename, os.path.basename(src_path), "Ошибка ❌", -1, 0.0, err_msg, fixes, user_id)
             return cors_response({"success": False, "log": err_msg})
 
         elapsed = round(time.time() - start_time, 2)
@@ -409,7 +385,7 @@ async def api_compile_handler(request):
         rec = save_compilation_record(
             "Web App 🌐",
             filename,
-            src_filename,
+            os.path.basename(src_path),
             "Успешно ✅" if is_success else "Ошибка ❌",
             proc.returncode,
             elapsed,
@@ -533,8 +509,7 @@ async def fixes_handler(message: Message):
 @dp.message(Command("status"))
 async def status_handler(message: Message):
     uptime_str = format_uptime(time.time() - BOT_START_TIME)
-    pawncc_path = get_pawncc_exe()
-    is_pawncc_ready = os.path.exists(pawncc_path)
+    is_pawncc_ready = os.path.exists(PAWNCC_BIN)
 
     storage_size_bytes = 0
     storage_files_count = 0
@@ -549,8 +524,8 @@ async def status_handler(message: Message):
     status_text = (
         "📊 **Системный статус компилятора:**\n\n"
         f"⏱ **Аптайм бота:** `{uptime_str}`\n"
-        f"⚙️ **Windows Engine (Wine):** {'🟢 Готов к работе' if is_pawncc_ready else '🔴 Бинарник не найден'}\n"
-        f"📍 **Путь к компилятору:** `{pawncc_path}`\n\n"
+        f"⚙️ **Pawn Compiler Engine:** {'🟢 Готов к работе' if is_pawncc_ready else '🔴 Бинарник не найден'}\n"
+        f"📍 **Путь:** `{PAWNCC_BIN}`\n\n"
         f"📈 **Статистика компиляций:**\n"
         f"• Всего запросов: **{COMPILE_STATS['total']}**\n"
         f"• Успешно собрано: **{COMPILE_STATS['success']}** ✅\n"
@@ -738,7 +713,7 @@ async def handle_document(message: Message):
         await message.reply("⚠ Пожалуйста, отправьте архив `.zip` или файл `.pwn`.")
         return
 
-    status_msg = await message.reply("⏳ Загрузка и компиляция через Wine Windows Engine...")
+    status_msg = await message.reply("⏳ Загрузка и компиляция...")
     start_time = time.time()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -804,12 +779,11 @@ async def handle_document(message: Message):
 
         add_include_guards_to_files(extract_dir if raw_name.lower().endswith(".zip") else tmpdir, src_path)
 
-        sys_include = get_system_include()
-        if os.path.exists(sys_include):
+        if os.path.exists(SYSTEM_INCLUDE):
             local_sys = os.path.join(pwn_dir, "include")
             os.makedirs(local_sys, exist_ok=True)
-            for sf in os.listdir(sys_include):
-                s_path = os.path.join(sys_include, sf)
+            for sf in os.listdir(SYSTEM_INCLUDE):
+                s_path = os.path.join(SYSTEM_INCLUDE, sf)
                 if os.path.isfile(s_path):
                     try:
                         shutil.copy2(s_path, os.path.join(local_sys, sf))
@@ -819,10 +793,7 @@ async def handle_document(message: Message):
 
         fixes = auto_repair_source_code(src_path)
         base_name = os.path.splitext(os.path.basename(src_path))[0]
-        src_filename = os.path.basename(src_path)
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
-
-        pawncc_path = get_pawncc_exe()
 
         include_args = ["-i.", "-iinclude", "-isystem"]
         for d in all_subdirs:
@@ -832,12 +803,13 @@ async def handle_document(message: Message):
                     include_args.append(f"-i{rel}")
             except ValueError:
                 pass
+        if os.path.exists(SYSTEM_INCLUDE):
+            include_args.append(f"-i{SYSTEM_INCLUDE}")
 
         cmd = [
-            "wine",
-            pawncc_path,
-            src_filename,
-            f"-o{base_name}.amx",
+            PAWNCC_BIN,
+            src_path,
+            f"-o{out_amx}",
             *include_args,
             "-O0",
             "-d0",
@@ -845,28 +817,18 @@ async def handle_document(message: Message):
             "-(+"
         ]
 
-        wine_env = os.environ.copy()
-        wine_env["WINEDEBUG"] = "-all"
-        wine_env["WINEARCH"] = "win32"
-        wine_env["WINEPREFIX"] = "/tmp/wine"
-        wine_env["WINEDLLOVERRIDES"] = "winedbg.exe=d"
-        wine_env["DISPLAY"] = ""
-        wine_env["XDG_RUNTIME_DIR"] = "/tmp"
-        wine_env["PATH"] = f"{os.path.dirname(pawncc_path)}:{wine_env.get('PATH', '')}"
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=pwn_dir,
-                env=wine_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                preexec_fn=isolate_cpu
+                preexec_fn=set_unlimited_stack
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
             err_msg = f"Ошибка вызова компилятора: {e}"
-            save_compilation_record("Telegram 💬", raw_name, src_filename, "Ошибка ❌", -1, 0.0, err_msg, fixes, message.from_user.id)
+            save_compilation_record("Telegram 💬", raw_name, os.path.basename(src_path), "Ошибка ❌", -1, 0.0, err_msg, fixes, message.from_user.id)
             await status_msg.edit_text(f"❌ {err_msg}")
             return
 
@@ -877,7 +839,7 @@ async def handle_document(message: Message):
         save_compilation_record(
             "Telegram 💬",
             raw_name,
-            src_filename,
+            os.path.basename(src_path),
             "Успешно ✅" if is_success else "Ошибка ❌",
             proc.returncode,
             elapsed,
@@ -896,7 +858,7 @@ async def handle_document(message: Message):
 
             fixes_info = "\n".join([f"• {x}" for x in fixes]) if fixes else "Без правок."
             caption = (
-                f"✅ **Собрано через Windows Engine!** ({elapsed} сек)\n\n"
+                f"✅ **Мод успешно скомпилирован!** ({elapsed} сек)\n\n"
                 f"📁 **Размер AMX:** {amx_mb} МБ\n"
                 f"📦 **Внутри архива:** `{base_name}.amx` и `gamemodes/{base_name}.amx`\n\n"
                 f"🛠 **Авто-исправления:**\n{fixes_info}\n\n"
