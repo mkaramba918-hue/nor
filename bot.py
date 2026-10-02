@@ -20,18 +20,13 @@ from aiogram.types import (
     WebAppInfo
 )
 
-# Снятие системного лимита стека ядра Linux (защита от вылета памяти -11)
-def set_unlimited_stack():
+# Фиксированный безопасный стек 64 МБ для 32-битного pawncc (защита от SIGSEGV -11)
+def set_compiler_stack_limit():
     try:
-        resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+        stack_bytes = 64 * 1024 * 1024  # 64 MB
+        resource.setrlimit(resource.RLIMIT_STACK, (stack_bytes, stack_bytes))
     except Exception:
-        try:
-            _, hard = resource.getrlimit(resource.RLIMIT_STACK)
-            resource.setrlimit(resource.RLIMIT_STACK, (hard, hard))
-        except Exception:
-            pass
-
-set_unlimited_stack()
+        pass
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -85,36 +80,6 @@ def format_uptime(seconds: float) -> str:
     return " ".join(parts)
 
 
-def add_include_guards_to_files(root_dir: str, exclude_file: str):
-    """Предотвращает зацикливание при вызовах инклудов друг в друга."""
-    for root, _, files in os.walk(root_dir):
-        for f in files:
-            f_l = f.lower()
-            if (f_l.endswith(".inc") or f_l.endswith(".pwn")) and os.path.join(root, f) != exclude_file:
-                fp = os.path.join(root, f)
-                try:
-                    with open(fp, "rb") as fl:
-                        content = fl.read()
-                    enc = "utf-8"
-                    for t in ("utf-8", "cp1251", "latin-1"):
-                        try:
-                            text = content.decode(t)
-                            enc = t
-                            break
-                        except UnicodeDecodeError:
-                            continue
-                    else:
-                        text = content.decode("utf-8", errors="replace")
-
-                    guard = f"_GUARD_{re.sub(r'[^A-Z0-9_]', '_', f.upper())}_"
-                    if guard not in text:
-                        guarded_text = f"#if defined {guard}\n    #endinput\n#endif\n#define {guard}\n\n" + text
-                        with open(fp, "w", encoding=enc, errors="replace") as fl:
-                            fl.write(guarded_text)
-                except Exception:
-                    pass
-
-
 def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user909028", db_name="user909028", db_pass="FpUjJoAu2gVD") -> list[str]:
     fixes = []
     try:
@@ -132,7 +97,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
         else:
             code = raw.decode("utf-8", errors="replace")
 
-        # 1. Закрытие незакрытых кавычек
+        # 1. Закрытие незакрытых кавычек в #define
         def fix_quotes(m):
             l = m.group(0)
             if l.count('"') % 2 != 0:
@@ -167,15 +132,7 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
         if code != before:
             fixes.append("Нормализованы пути `#include` (убраны `../`)")
 
-        # 4. Восстановление/включение директивы защиты стека
-        if re.search(r'//\s*#pragma\s+disablerecursion', code):
-            code = re.sub(r'//\s*(#pragma\s+disablerecursion)[^\r\n]*', r'\1', code)
-            fixes.append("Восстановлен `#pragma disablerecursion`")
-        elif not re.search(r'#pragma\s+disablerecursion', code):
-            code = "#pragma disablerecursion\n" + code
-            fixes.append("Включен `#pragma disablerecursion`")
-
-        # 5. Точка входа main()
+        # 4. Точка входа main()
         if not re.search(r'\bmain\s*\(\s*\)', code):
             code += "\n\nmain() {}\n"
             fixes.append("Добавлена точка входа `main()`")
@@ -269,7 +226,6 @@ async def api_compile_handler(request):
             f.write(file_bytes)
 
         extract_dir = os.path.join(tmpdir, "extracted")
-        all_subdirs = set()
         src_path = None
 
         if filename.lower().endswith(".zip"):
@@ -279,7 +235,6 @@ async def api_compile_handler(request):
 
             pwn_candidates = []
             for root, dirs, files in os.walk(extract_dir):
-                all_subdirs.add(root)
                 for f in files:
                     if f.lower().endswith(".pwn"):
                         full_pwn = os.path.join(root, f)
@@ -295,11 +250,10 @@ async def api_compile_handler(request):
             src_path = pwn_candidates[0][0]
         else:
             src_path = input_path
-            all_subdirs.add(tmpdir)
 
         pwn_dir = os.path.dirname(src_path)
 
-        # Полное раскладывание всех .inc и .pwn файлов (включая папку system/)
+        # Раскладываем все файлы .inc и .pwn по рабочей директории
         if filename.lower().endswith(".zip"):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
@@ -322,9 +276,7 @@ async def api_compile_handler(request):
                                 except Exception:
                                     pass
 
-        add_include_guards_to_files(extract_dir if filename.lower().endswith(".zip") else tmpdir, src_path)
-
-        # Копируем системные библиотеки в include
+        # Копируем системные библиотеки в локальную папку include
         if os.path.exists(SYSTEM_INCLUDE):
             local_sys = os.path.join(pwn_dir, "include")
             os.makedirs(local_sys, exist_ok=True)
@@ -341,18 +293,11 @@ async def api_compile_handler(request):
         base_name = os.path.splitext(os.path.basename(src_path))[0]
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
+        # Безопасный набор путей инклудов (строго ограничено, чтобы не переполнять массив pawncc)
         include_args = ["-i.", "-iinclude", "-isystem"]
-        for d in all_subdirs:
-            try:
-                rel = os.path.relpath(d, pwn_dir)
-                if rel != "." and f"-i{rel}" not in include_args:
-                    include_args.append(f"-i{rel}")
-            except ValueError:
-                pass
         if os.path.exists(SYSTEM_INCLUDE):
             include_args.append(f"-i{SYSTEM_INCLUDE}")
 
-        # Прямой запуск нативного Linux Pawn-компилятора
         cmd = [
             PAWNCC_BIN,
             src_path,
@@ -370,7 +315,7 @@ async def api_compile_handler(request):
                 cwd=pwn_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                preexec_fn=set_unlimited_stack
+                preexec_fn=set_compiler_stack_limit
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
@@ -499,9 +444,7 @@ async def fixes_handler(message: Message):
         "1. Закрытие незакрытых кавычек в `#define`.\n"
         "2. Настройка базы HostGTA (`127.0.0.1`, `user909028`).\n"
         "3. Нормализация путей инклудов (устранение прыжков `../`).\n"
-        "4. Включение `#pragma disablerecursion` (защита от вылета памяти).\n"
-        "5. Защита от бесконечного зацикливания инклудов (`#endinput` guards).\n"
-        "6. Добавление точки входа `main() {}` при её отсутствии."
+        "4. Добавление точки входа `main() {}` при её отсутствии."
     )
     await message.answer(info, parse_mode="Markdown")
 
@@ -723,7 +666,6 @@ async def handle_document(message: Message):
         await bot.download_file(tg_file.file_path, download_path)
 
         extract_dir = os.path.join(tmpdir, "extracted")
-        all_subdirs = set()
         src_path = None
 
         if raw_name.lower().endswith(".zip"):
@@ -733,7 +675,6 @@ async def handle_document(message: Message):
 
             pwn_candidates = []
             for root, dirs, files in os.walk(extract_dir):
-                all_subdirs.add(root)
                 for f in files:
                     if f.lower().endswith(".pwn"):
                         full_pwn = os.path.join(root, f)
@@ -751,7 +692,6 @@ async def handle_document(message: Message):
             src_path = pwn_candidates[0][0]
         else:
             src_path = download_path
-            all_subdirs.add(tmpdir)
 
         pwn_dir = os.path.dirname(src_path)
 
@@ -777,8 +717,6 @@ async def handle_document(message: Message):
                                 except Exception:
                                     pass
 
-        add_include_guards_to_files(extract_dir if raw_name.lower().endswith(".zip") else tmpdir, src_path)
-
         if os.path.exists(SYSTEM_INCLUDE):
             local_sys = os.path.join(pwn_dir, "include")
             os.makedirs(local_sys, exist_ok=True)
@@ -796,13 +734,6 @@ async def handle_document(message: Message):
         out_amx = os.path.join(pwn_dir, f"{base_name}.amx")
 
         include_args = ["-i.", "-iinclude", "-isystem"]
-        for d in all_subdirs:
-            try:
-                rel = os.path.relpath(d, pwn_dir)
-                if rel != "." and f"-i{rel}" not in include_args:
-                    include_args.append(f"-i{rel}")
-            except ValueError:
-                pass
         if os.path.exists(SYSTEM_INCLUDE):
             include_args.append(f"-i{SYSTEM_INCLUDE}")
 
@@ -823,7 +754,7 @@ async def handle_document(message: Message):
                 cwd=pwn_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                preexec_fn=set_unlimited_stack
+                preexec_fn=set_compiler_stack_limit
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
