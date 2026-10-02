@@ -36,9 +36,10 @@ dp = Dispatcher()
 STORAGE_DIR = "/tmp/amx_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
-# Системная статистика и хранилище логов
+# Глобальная история всех компиляций (хранит последние 50 сборок Web App + Telegram)
 BOT_START_TIME = time.time()
 COMPILE_STATS = {"total": 0, "success": 0, "failed": 0}
+compilation_history: list[dict] = []
 user_logs: dict[int, dict] = {}
 
 
@@ -81,7 +82,6 @@ def safe_decode(b: bytes) -> str:
 
 
 def format_uptime(seconds: float) -> str:
-    """Преобразование секунд в читаемый формат."""
     s = int(seconds)
     hours, remainder = divmod(s, 3600)
     minutes, sec = divmod(remainder, 60)
@@ -95,6 +95,36 @@ def format_uptime(seconds: float) -> str:
         parts.append(f"{minutes} мин.")
     parts.append(f"{sec} сек.")
     return " ".join(parts)
+
+
+def add_include_guards_to_files(root_dir: str, exclude_file: str):
+    """Предотвращает бесконечное зацикливание при перекрестных вызовах #include."""
+    for root, _, files in os.walk(root_dir):
+        for f in files:
+            f_l = f.lower()
+            if (f_l.endswith(".inc") or f_l.endswith(".pwn")) and os.path.join(root, f) != exclude_file:
+                fp = os.path.join(root, f)
+                try:
+                    with open(fp, "rb") as fl:
+                        content = fl.read()
+                    enc = "utf-8"
+                    for t in ("utf-8", "cp1251", "latin-1"):
+                        try:
+                            text = content.decode(t)
+                            enc = t
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    else:
+                        text = content.decode("utf-8", errors="replace")
+
+                    guard = f"_GUARD_{re.sub(r'[^A-Z0-9_]', '_', f.upper())}_"
+                    if guard not in text:
+                        guarded_text = f"#if defined {guard}\n    #endinput\n#endif\n#define {guard}\n\n" + text
+                        with open(fp, "w", encoding=enc, errors="replace") as fl:
+                            fl.write(guarded_text)
+                except Exception:
+                    pass
 
 
 def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user909028", db_name="user909028", db_pass="FpUjJoAu2gVD") -> list[str]:
@@ -171,6 +201,39 @@ def auto_repair_source_code(file_path: str, db_host="127.0.0.1", db_user="user90
     return fixes
 
 
+def save_compilation_record(source: str, input_file: str, target_file: str, status: str, returncode: int, elapsed: float, output: str, applied_fixes: list, user_id=None) -> dict:
+    """Сохраняет отчет в историю компиляций бота."""
+    global COMPILE_STATS
+    rec_id = str(uuid.uuid4())[:6]
+    rec = {
+        "id": rec_id,
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source": source,
+        "input_file": input_file,
+        "target_file": target_file,
+        "status": status,
+        "returncode": returncode,
+        "elapsed": elapsed,
+        "output": output,
+        "applied_fixes": applied_fixes,
+        "user_id": user_id
+    }
+    compilation_history.insert(0, rec)
+    if len(compilation_history) > 50:
+        compilation_history.pop()
+
+    if user_id:
+        user_logs[user_id] = rec
+
+    COMPILE_STATS["total"] += 1
+    if "Успешно" in status:
+        COMPILE_STATS["success"] += 1
+    else:
+        COMPILE_STATS["failed"] += 1
+
+    return rec
+
+
 # ==============================================================================
 #                  API ДЛЯ MINI APP (CORS + ЛИМИТ ДО 100 МБ)
 # ==============================================================================
@@ -197,19 +260,17 @@ async def options_handler(request):
     )
 
 async def api_compile_handler(request):
-    global COMPILE_STATS
-    COMPILE_STATS["total"] += 1
-
     post_data = await request.post()
     upload_field = post_data.get("file")
     if not upload_field:
-        COMPILE_STATS["failed"] += 1
         return cors_response({"success": False, "log": "Файл не передан!"}, status=400)
 
     db_host = post_data.get("db_host", "127.0.0.1")
     db_user = post_data.get("db_user", "user909028")
     db_name = post_data.get("db_name", "user909028")
     db_pass = post_data.get("db_pass", "FpUjJoAu2gVD")
+    user_id_raw = post_data.get("user_id")
+    user_id = int(user_id_raw) if user_id_raw and str(user_id_raw).isdigit() else None
 
     filename = upload_field.filename
     file_bytes = upload_field.file.read()
@@ -241,7 +302,7 @@ async def api_compile_handler(request):
                         pwn_candidates.append((full_pwn, score))
 
             if not pwn_candidates:
-                COMPILE_STATS["failed"] += 1
+                save_compilation_record("Web App 🌐", filename, "не найден", "Ошибка ❌", 1, 0.0, "В архиве нет файла .pwn", [], user_id)
                 return cors_response({"success": False, "log": "В архиве нет файла .pwn!"})
             pwn_candidates.sort(key=lambda x: x[1], reverse=True)
             src_path = pwn_candidates[0][0]
@@ -251,6 +312,7 @@ async def api_compile_handler(request):
 
         pwn_dir = os.path.dirname(src_path)
 
+        # Копируем библиотеки к исходнику
         if filename.lower().endswith(".zip"):
             for root, _, files in os.walk(extract_dir):
                 for f in files:
@@ -273,6 +335,10 @@ async def api_compile_handler(request):
                                 except Exception:
                                     pass
 
+        # Добавляем защиту от зацикливания инклудов
+        add_include_guards_to_files(extract_dir if filename.lower().endswith(".zip") else tmpdir, src_path)
+
+        # Копируем базовые библиотеки в include
         sys_include = get_system_include()
         if os.path.exists(sys_include):
             local_sys = os.path.join(pwn_dir, "include")
@@ -302,14 +368,21 @@ async def api_compile_handler(request):
             except ValueError:
                 pass
 
+        # taskset -c 0,1 ограничивает процесс 2 ядрами (устраняет сбой ntdll 48 cores)
+        # -O0 -d0 устраняют переполнение внутренних таблиц оптимизатора
         cmd = [
+            "taskset",
+            "-c",
+            "0,1",
             "wine",
             pawncc_path,
             src_filename,
             f"-o{base_name}.amx",
             *include_args,
-            "-O1",
-            "-d2"
+            "-O0",
+            "-d0",
+            "-;+",
+            "-(+"
         ]
 
         wine_env = os.environ.copy()
@@ -331,16 +404,29 @@ async def api_compile_handler(request):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
-            COMPILE_STATS["failed"] += 1
-            return cors_response({"success": False, "log": f"Ошибка вызова компилятора: {e}"})
+            err_msg = f"Ошибка вызова компилятора: {e}"
+            save_compilation_record("Web App 🌐", filename, src_filename, "Ошибка ❌", -1, 0.0, err_msg, fixes, user_id)
+            return cors_response({"success": False, "log": err_msg})
 
         elapsed = round(time.time() - start_time, 2)
         out_log = (safe_decode(stdout) + "\n" + safe_decode(stderr)).strip()
         is_success = os.path.exists(out_amx) and os.path.getsize(out_amx) > 0 and proc.returncode == 0
 
+        # Сохранение в общую историю бота
+        rec = save_compilation_record(
+            "Web App 🌐",
+            filename,
+            src_filename,
+            "Успешно ✅" if is_success else "Ошибка ❌",
+            proc.returncode,
+            elapsed,
+            out_log,
+            fixes,
+            user_id
+        )
+
         if is_success:
-            COMPILE_STATS["success"] += 1
-            file_id = str(uuid.uuid4())[:8]
+            file_id = rec["id"]
             amx_mb = round(os.path.getsize(out_amx) / (1024 * 1024), 2)
             zip_target = os.path.join(STORAGE_DIR, f"{file_id}.zip")
 
@@ -358,7 +444,6 @@ async def api_compile_handler(request):
                 "download_url": f"/api/download/{file_id}"
             })
         else:
-            COMPILE_STATS["failed"] += 1
             return cors_response({
                 "success": False,
                 "returncode": proc.returncode,
@@ -416,11 +501,9 @@ async def start_handler(message: Message):
     )
     await message.answer(
         "👋 **Pawn Remote Compiler Bot**\n\n"
-        "Сборка модов SA-MP / CRMP (включая крупные проекты на 60 000+ строк) на официальном Windows-компиляторе через среду Wine.\n\n"
-        "🔹 **Как скомпилировать:**\n"
-        "• Нажмите **«⚡ Открыть Web-компилятор»** ниже (удобный интерфейс с логами).\n"
-        "• Либо отправьте `.zip` архив или файл `.pwn` прямо в этот чат.\n\n"
-        "💡 Введите `/help`, чтобы просмотреть список всех команд и инструкции.",
+        "• Нажмите **«⚡ Открыть Web-компилятор»**, чтобы скомпилировать мод в Web App.\n"
+        "• Либо отправьте архив `.zip` прямо сюда в чат.\n\n"
+        "📖 Введите `/logs` — открыть всю историю компиляций (Web App + Telegram).",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
@@ -429,42 +512,37 @@ async def start_handler(message: Message):
 @dp.message(Command("help", "commands"))
 async def help_handler(message: Message):
     help_text = (
-        "📖 **Справка по командам бота:**\n\n"
-        "• `/start` — Показать стартовое меню и кнопку Web App\n"
-        "• `/help` — Эта подробная инструкция\n"
-        "• `/status` — Состояние сервера, аптайм, память и статистика сборок\n"
-        "• `/log` (или `/logs`) — Лог последней компиляции вашего мода\n"
-        "• `/clean` — Очистить временные AMX архивы на сервере\n"
-        "• `/fixes` — Список автоматических исправлений кода\n\n"
-        "📦 **Требования к архиву `.zip`:**\n"
-        "1. Архив должен содержать файл исходника `.pwn` (например, `gamemodes/new.pwn`).\n"
-        "2. Все кастомные инклуды (папки `include/`, `pawno/`, `system/`) должны лежать внутри архива.\n"
-        "3. Бот сам найдет зависимости и свяжет пути поиска."
+        "📖 **Справка по командам компилятора:**\n\n"
+        "• `/logs` — 📋 **Показать всю историю компиляций** (из Web App и Telegram)\n"
+        "• `/log` — Открыть подробный лог последней сборки\n"
+        "• `/log <номер>` — Открыть лог конкретной компиляции (например: `/log 1`)\n"
+        "• `/status` — Состояние сервера, аптайм и число сборок\n"
+        "• `/clean` — Очистить сохраненные архивы `.amx` на сервере\n"
+        "• `/fixes` — Список автоматических исправлений кода мода"
     )
     await message.answer(help_text, parse_mode="Markdown")
 
 
-@dp.message(Command("fixes", "autorepair"))
+@dp.message(Command("fixes"))
 async def fixes_handler(message: Message):
-    fixes_info = (
-        "🛠 **Автоматические исправления мода:**\n\n"
-        "Бот перед запуском компилятора сам проверяет и устраняет частые ошибки:\n\n"
-        "1. **Кавычки:** закрывает незакрытые кавычки в `#define` (из-за которых летит синтаксис).\n"
-        "2. **MySQL HostGTA:** настраивает подключение на `127.0.0.1`, базу и пользователя `user909028`.\n"
-        "3. **Пути инклудов:** переводит вызовы `../include/file.pwn` в безопасный формат `<file.pwn>`.\n"
-        "4. **Защита памяти:** включает `#pragma disablerecursion` (предотвращает падение 32-битного компилятора по ошибке `0000003A`).\n"
-        "5. **Точка входа:** автоматически дописывает `main() {}`, если она отсутствует."
+    info = (
+        "🛠 **Автоматические исправления Pawn:**\n\n"
+        "1. Закрытие незакрытых кавычек в `#define`.\n"
+        "2. Настройка базы HostGTA (`127.0.0.1`, `user909028`).\n"
+        "3. Нормализация путей инклудов (устранение прыжков `../`).\n"
+        "4. Включение `#pragma disablerecursion` (защита от вылета памяти).\n"
+        "5. Защита от бесконечного зацикливания инклудов (`#endinput` guards).\n"
+        "6. Добавление точки входа `main() {}` при её отсутствии."
     )
-    await message.answer(fixes_info, parse_mode="Markdown")
+    await message.answer(info, parse_mode="Markdown")
 
 
-@dp.message(Command("status", "info"))
+@dp.message(Command("status"))
 async def status_handler(message: Message):
     uptime_str = format_uptime(time.time() - BOT_START_TIME)
     pawncc_path = get_pawncc_exe()
     is_pawncc_ready = os.path.exists(pawncc_path)
 
-    # Подсчет размера временного хранилища
     storage_size_bytes = 0
     storage_files_count = 0
     if os.path.exists(STORAGE_DIR):
@@ -490,7 +568,7 @@ async def status_handler(message: Message):
     await message.answer(status_text, parse_mode="Markdown")
 
 
-@dp.message(Command("clean", "clear"))
+@dp.message(Command("clean"))
 async def clean_handler(message: Message):
     deleted = 0
     freed_bytes = 0
@@ -508,76 +586,168 @@ async def clean_handler(message: Message):
     freed_mb = round(freed_bytes / (1024 * 1024), 2)
     await message.answer(
         f"🧹 **Очистка завершена!**\n"
-        f"• Удалено временных архивов: **{deleted}**\n"
+        f"• Удалено временных файлов: **{deleted}**\n"
         f"• Освобождено памяти: **{freed_mb} МБ**",
         parse_mode="Markdown"
     )
 
 
-@dp.message(Command("log", "logs"))
-async def log_handler(message: Message):
-    user_id = message.from_user.id
-    data = user_logs.get(user_id)
-
-    if not data:
+# КОМАНДА /LOGS — ВЫВОДИТ ВСЮ ИСТОРИЮ ВСЕХ СБОРОК
+@dp.message(Command("logs"))
+async def logs_all_handler(message: Message):
+    if not compilation_history:
         await message.reply(
-            "ℹ️ У вас пока нет сохранённых логов компиляции в текущей сессии.\n"
-            "Отправьте архив мода или запустите сборку в Web App.",
+            "ℹ️ История компиляций пока пуста.\n"
+            "Запустите сборку в Web App или отправьте `.zip` архив в чат.",
+            parse_mode="Markdown"
+        )
+        return
+
+    lines = [f"📋 **История всех компиляций (всего: {len(compilation_history)}):**\n"]
+    for i, item in enumerate(compilation_history[:15], 1):
+        lines.append(
+            f"**{i}.** `{item['time']}` | {item['source']}\n"
+            f"• **Файл:** `{item['input_file']}` (`{item['target_file']}`)\n"
+            f"• **Результат:** {item['status']} (Код: `{item['returncode']}`, `{item['elapsed']}s`)\n"
+            f"• Посмотреть лог: `/log_{item['id']}` или `/log {i}`\n"
+        )
+
+    summary_text = "\n".join(lines)
+
+    # Формируем общий текстовый файл со всеми логами всех сборок
+    full_dump = []
+    for i, item in enumerate(compilation_history, 1):
+        full_dump.append(
+            f"==================== СБОРКА #{i} [{item['id']}] ====================\n"
+            f"Время: {item['time']} | Источник: {item['source']}\n"
+            f"Входной файл: {item['input_file']} | Исходник: {item['target_file']}\n"
+            f"Статус: {item['status']} | Код возврата: {item['returncode']} | Время: {item['elapsed']}s\n"
+            f"Автоисправления: {', '.join(item.get('applied_fixes', []))}\n\n"
+            f"--- ВЫВОД ПАВН-КОМПИЛЯТОРА ---\n"
+            f"{item['output']}\n\n"
+        )
+    dump_bytes = "\n".join(full_dump).encode("utf-8")
+    doc_file = BufferedInputFile(dump_bytes, filename="all_compilations_history.txt")
+
+    if len(summary_text) <= 3500:
+        await message.reply(summary_text, parse_mode="Markdown")
+        await message.reply_document(doc_file, caption="📄 Полный лог всех сборок в одном файле")
+    else:
+        await message.reply_document(doc_file, caption=summary_text[:1000] + "\n\n...полный список в файле выше.")
+
+
+# КОМАНДА /LOG — ВЫВОДИТ ПОСЛЕДНИЙ ЛОГ ИЛИ ЛОГ ПО НОМЕРУ / ID
+@dp.message(Command("log"))
+async def log_single_handler(message: Message):
+    args = message.text.split()
+    target_rec = None
+
+    if len(args) > 1:
+        param = args[1].replace("#", "").strip()
+        if param.isdigit():
+            idx = int(param) - 1
+            if 0 <= idx < len(compilation_history):
+                target_rec = compilation_history[idx]
+        else:
+            for item in compilation_history:
+                if item["id"].lower() == param.lower():
+                    target_rec = item
+                    break
+
+    # Если аргументов нет — берем последнюю сборку пользователя или самую последнюю в системе
+    if not target_rec:
+        user_id = message.from_user.id
+        if user_id in user_logs:
+            target_rec = user_logs[user_id]
+        elif compilation_history:
+            target_rec = compilation_history[0]
+
+    if not target_rec:
+        await message.reply(
+            "ℹ️ В системе пока нет сохранённых логов компиляции.\n"
+            "Запустите сборку в Web App или отправьте архив в чат.",
             parse_mode="Markdown"
         )
         return
 
     report_header = (
-        f"📋 **Лог последней сборки**\n"
-        f"• **Архив:** `{data['input_file']}`\n"
-        f"• **Файл:** `{data['target_file']}`\n"
-        f"• **Статус:** {data['status']}\n"
-        f"• **Код возврата:** `{data['returncode']}`\n"
-        f"• **Время выполнения:** `{data['elapsed']} сек`\n"
+        f"📋 **Лог сборки [{target_rec['id']}]**\n"
+        f"• **Источник:** {target_rec['source']}\n"
+        f"• **Архив:** `{target_rec['input_file']}`\n"
+        f"• **Файл:** `{target_rec['target_file']}`\n"
+        f"• **Статус:** {target_rec['status']}\n"
+        f"• **Код возврата:** `{target_rec['returncode']}`\n"
+        f"• **Время выполнения:** `{target_rec['elapsed']} сек`\n"
     )
 
-    fixes_str = "\n".join([f"• {x}" for x in data.get("applied_fixes", [])])
+    fixes_str = "\n".join([f"• {x}" for x in target_rec.get("applied_fixes", [])])
     if not fixes_str:
         fixes_str = "Автоисправления не потребовались"
 
     full_log_text = (
         f"=== ДЕТАЛИ КОМПИЛЯЦИИ ===\n"
-        f"Входной файл: {data['input_file']}\n"
-        f"Целевой исходник: {data['target_file']}\n"
-        f"Команда: {data['command']}\n"
-        f"Код завершения: {data['returncode']}\n"
-        f"Время выполнения: {data['elapsed']}s\n\n"
+        f"ID: {target_rec['id']} | Время: {target_rec['time']}\n"
+        f"Входной файл: {target_rec['input_file']}\n"
+        f"Целевой исходник: {target_rec['target_file']}\n"
+        f"Статус: {target_rec['status']}\n"
+        f"Код завершения: {target_rec['returncode']}\n"
+        f"Время выполнения: {target_rec['elapsed']}s\n\n"
         f"=== ПРИМЕНЕННЫЕ АВТОИСПРАВЛЕНИЯ ===\n"
         f"{fixes_str}\n\n"
         f"=== ВЫВОД ПАВН-КОМПИЛЯТОРА ===\n"
-        f"{data['output'] if data['output'] else '(Вывод компилятора пуст)'}\n"
+        f"{target_rec['output'] if target_rec['output'] else '(Вывод компилятора пуст)'}\n"
     )
 
     if len(full_log_text) <= 3000:
-        await message.reply(
-            f"{report_header}\n```\n{full_log_text}\n```",
-            parse_mode="Markdown"
-        )
+        await message.reply(f"{report_header}\n```\n{full_log_text}\n```", parse_mode="Markdown")
     else:
         file_data = full_log_text.encode("utf-8")
-        doc_file = BufferedInputFile(file_data, filename=f"compile_log_{data['target_file']}.txt")
-        await message.reply_document(
-            document=doc_file,
-            caption=report_header,
-            parse_mode="Markdown"
-        )
+        doc_file = BufferedInputFile(file_data, filename=f"compile_log_{target_rec['target_file']}.txt")
+        await message.reply_document(document=doc_file, caption=report_header, parse_mode="Markdown")
+
+
+# ОБРАБОТКА КОМАНД ВИДА /log_a1b2c3
+@dp.message(F.text.regexp(r"^/log_([a-zA-Z0-9]+)"))
+async def log_by_hash_handler(message: Message):
+    match = re.match(r"^/log_([a-zA-Z0-9]+)", message.text)
+    if not match:
+        return
+    log_id = match.group(1).lower()
+    target_rec = None
+    for item in compilation_history:
+        if item["id"].lower() == log_id:
+            target_rec = item
+            break
+
+    if not target_rec:
+        await message.reply("❌ Лог с таким идентификатором не найден.")
+        return
+
+    full_log_text = (
+        f"=== ДЕТАЛИ КОМПИЛЯЦИИ [{target_rec['id']}] ===\n"
+        f"Время: {target_rec['time']} | Источник: {target_rec['source']}\n"
+        f"Входной файл: {target_rec['input_file']}\n"
+        f"Целевой исходник: {target_rec['target_file']}\n"
+        f"Статус: {target_rec['status']} (Код: {target_rec['returncode']})\n"
+        f"Время выполнения: {target_rec['elapsed']}s\n\n"
+        f"=== ВЫВОД ПАВН-КОМПИЛЯТОРА ===\n"
+        f"{target_rec['output'] if target_rec['output'] else '(Вывод пуст)'}\n"
+    )
+    if len(full_log_text) <= 3000:
+        await message.reply(f"```\n{full_log_text}\n```", parse_mode="Markdown")
+    else:
+        file_data = full_log_text.encode("utf-8")
+        doc_file = BufferedInputFile(file_data, filename=f"compile_log_{target_rec['id']}.txt")
+        await message.reply_document(document=doc_file, parse_mode="Markdown")
 
 
 @dp.message(F.document)
 async def handle_document(message: Message):
-    global COMPILE_STATS
-    COMPILE_STATS["total"] += 1
-
     doc = message.document
     raw_name = doc.file_name
     if not (raw_name.lower().endswith(".zip") or raw_name.lower().endswith(".pwn")):
-        COMPILE_STATS["failed"] += 1
-        await message.reply("⚠️️ Пожалуйста, отправьте архив `.zip` или файл `.pwn`.")
+        save_compilation_record("Telegram 💬", raw_name, "отклонен", "Ошибка ❌", -1, 0.0, "Неподдерживаемый формат файла", [], message.from_user.id)
+        await message.reply("⚠ Пожалуйста, отправьте архив `.zip` или файл `.pwn`.")
         return
 
     status_msg = await message.reply("⏳ Загрузка и компиляция через Wine Windows Engine...")
@@ -610,7 +780,7 @@ async def handle_document(message: Message):
                         pwn_candidates.append((full_pwn, score))
 
             if not pwn_candidates:
-                COMPILE_STATS["failed"] += 1
+                save_compilation_record("Telegram 💬", raw_name, "не найден", "Ошибка ❌", 1, 0.0, "В архиве нет файла .pwn", [], message.from_user.id)
                 await status_msg.edit_text("❌ В архиве нет файла исходного кода `.pwn`.")
                 return
 
@@ -644,6 +814,8 @@ async def handle_document(message: Message):
                                 except Exception:
                                     pass
 
+        add_include_guards_to_files(extract_dir if raw_name.lower().endswith(".zip") else tmpdir, src_path)
+
         sys_include = get_system_include()
         if os.path.exists(sys_include):
             local_sys = os.path.join(pwn_dir, "include")
@@ -674,13 +846,18 @@ async def handle_document(message: Message):
                 pass
 
         cmd = [
+            "taskset",
+            "-c",
+            "0,1",
             "wine",
             pawncc_path,
             src_filename,
             f"-o{base_name}.amx",
             *include_args,
-            "-O1",
-            "-d2"
+            "-O0",
+            "-d0",
+            "-;+",
+            "-(+"
         ]
 
         wine_env = os.environ.copy()
@@ -702,28 +879,28 @@ async def handle_document(message: Message):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
         except Exception as e:
-            COMPILE_STATS["failed"] += 1
-            await status_msg.edit_text(f"❌ Ошибка вызова компилятора: {e}")
+            err_msg = f"Ошибка вызова компилятора: {e}"
+            save_compilation_record("Telegram 💬", raw_name, src_filename, "Ошибка ❌", -1, 0.0, err_msg, fixes, message.from_user.id)
+            await status_msg.edit_text(f"❌ {err_msg}")
             return
 
         elapsed = round(time.time() - start_time, 2)
         out_log = (safe_decode(stdout) + "\n" + safe_decode(stderr)).strip()
         is_success = os.path.exists(out_amx) and os.path.getsize(out_amx) > 0 and proc.returncode == 0
 
-        # Сохранение истории для команды /log
-        user_logs[message.from_user.id] = {
-            "input_file": raw_name,
-            "target_file": os.path.basename(src_path),
-            "command": " ".join(cmd),
-            "returncode": proc.returncode,
-            "output": out_log,
-            "elapsed": elapsed,
-            "status": "Успешно ✅" if is_success else "Ошибка ❌",
-            "applied_fixes": fixes
-        }
+        save_compilation_record(
+            "Telegram 💬",
+            raw_name,
+            src_filename,
+            "Успешно ✅" if is_success else "Ошибка ❌",
+            proc.returncode,
+            elapsed,
+            out_log,
+            fixes,
+            message.from_user.id
+        )
 
         if is_success:
-            COMPILE_STATS["success"] += 1
             await status_msg.delete()
             amx_mb = round(os.path.getsize(out_amx) / (1024 * 1024), 2)
             zip_out = os.path.join(tmpdir, f"{base_name}_amx.zip")
@@ -737,13 +914,18 @@ async def handle_document(message: Message):
                 f"📁 **Размер AMX:** {amx_mb} МБ\n"
                 f"📦 **Внутри архива:** `{base_name}.amx` и `gamemodes/{base_name}.amx`\n\n"
                 f"🛠 **Авто-исправления:**\n{fixes_info}\n\n"
-                f"ℹ️ Для просмотра лога введите `/log`."
+                f"ℹ️ Для просмотра лога введите `/log` или `/logs`."
             )
             await message.reply_document(
                 FSInputFile(zip_out, filename=f"{base_name}_amx.zip"),
                 caption=caption,
                 parse_mode="Markdown"
             )
+        else:
+            err_box = out_log[:3200] if out_log else f"Процесс завершился с кодом {proc.returncode}"
+            await status_msg.edit_text(
+                f"❌ **Ошибка сборки (`{os.path.basename(src_path)}`):**\n"
+                f"```\n{err_box}\n"
         else:
             COMPILE_STATS["failed"] += 1
             err_box = out_log[:3200] if out_log else f"Процесс завершился с кодом {proc.returncode}"
@@ -752,7 +934,7 @@ async def handle_document(message: Message):
                 f"```\n{err_box}\n```\n\n"
                 f"ℹ️ Для детального отчёта введите `/log`.",
                 parse_mode="Markdown"
-            )
+            ) 
 
 
 # ==============================================================================
@@ -766,3 +948,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+            
