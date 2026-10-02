@@ -30,11 +30,15 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Путь к системным инклудам внутри контейнера (/app/include)
 INCLUDE_DIR = os.path.abspath("include")
+
+# Словарь для хранения последних логов пользователей: user_id -> dict
 user_logs: dict[int, dict] = {}
 
 
 def safe_decode(b: bytes) -> str:
+    """Безопасное декодирование вывода компилятора."""
     if not b:
         return ""
     for enc in ("utf-8", "cp1251", "cp866", "latin-1"):
@@ -62,7 +66,11 @@ async def log_handler(message: Message):
     data = user_logs.get(user_id)
 
     if not data:
-        await message.reply("ℹ️ У вас пока нет сохранённых логов компиляции.")
+        await message.reply(
+            "ℹ️ У вас пока нет сохранённых логов компиляции.\n"
+            "Отправьте файл `.pwn` или архив `.zip`, а затем вызовите `/log`.",
+            parse_mode="Markdown"
+        )
         return
 
     report_header = (
@@ -86,11 +94,18 @@ async def log_handler(message: Message):
     )
 
     if len(full_log_text) <= 3000:
-        await message.reply(f"{report_header}\n```\n{full_log_text}\n```", parse_mode="Markdown")
+        await message.reply(
+            f"{report_header}\n```\n{full_log_text}\n```",
+            parse_mode="Markdown"
+        )
     else:
         file_data = full_log_text.encode("utf-8")
         doc_file = BufferedInputFile(file_data, filename=f"compile_log_{data['target_file']}.txt")
-        await message.reply_document(document=doc_file, caption=report_header, parse_mode="Markdown")
+        await message.reply_document(
+            document=doc_file,
+            caption=report_header,
+            parse_mode="Markdown"
+        )
 
 
 @dp.message(F.document)
@@ -121,6 +136,7 @@ async def handle_compilation(message: Message):
         found_include_dirs = set()
         extract_dir = os.path.join(tmpdir, "extracted")
 
+        # 1. Распаковка архива
         if file_name.endswith(".zip"):
             os.makedirs(extract_dir, exist_ok=True)
             try:
@@ -154,7 +170,7 @@ async def handle_compilation(message: Message):
                             score += 100_000_000
                         if f.lower() in ("new.pwn", "main.pwn", "mode.pwn"):
                             score += 50_000_000
-                        if "include" in pwn_lower or "map" in pwn_lower:
+                        if "include" in pwn_lower or "map" in pwn_lower or "filterscripts" in pwn_lower:
                             score -= 10_000_000
 
                         pwn_candidates.append((full_pwn_path, score))
@@ -170,10 +186,11 @@ async def handle_compilation(message: Message):
 
         pwn_dir = os.path.dirname(src_path)
 
-        # Автоматическое исправление синтаксиса и путей инклудов прямо в исходнике
+        # 2. Автоматическое исправление синтаксиса и путей инклудов в исходнике
         try:
             with open(src_path, "rb") as f:
                 raw_bytes = f.read()
+
             enc = "utf-8"
             for test_enc in ("utf-8", "cp1251", "latin-1"):
                 try:
@@ -185,19 +202,24 @@ async def handle_compilation(message: Message):
             else:
                 code_str = raw_bytes.decode("utf-8", errors="replace")
 
-            # Закрытие незакрытых кавычек в строках настроек
+            # Закрываем незакрытые кавычки в настройках MySQL
             code_str = re.sub(r'(#define\s+MYSQL_PASS\s+"[^"\r\n]+)(\r?\n)', r'\1"\2', code_str)
-            # Нормализация относительных путей инклудов (../include/...)
+
+            # Нормализуем относительные пути ../include/... -> <...>
             code_str = re.sub(r'#include\s+[<"]\.\./include/system/([^>"]+)[>"]', r'#include <system/\1>', code_str)
             code_str = re.sub(r'#include\s+[<"]\.\./include/([^>"]+)[>"]', r'#include <\1>', code_str)
             code_str = re.sub(r'#include\s+[<"]\.\.\\include\\([^>"]+)[>"]', r'#include <\1>', code_str)
+
+            # Добавляем main() если отсутствует
+            if not re.search(r'\bmain\s*\(\s*\)', code_str):
+                code_str += "\n\nmain() {}\n"
 
             with open(src_path, "w", encoding=enc, errors="replace") as f:
                 f.write(code_str)
         except Exception:
             pass
 
-        # Создание символических ссылок для поддержки обращений к ../include
+        # 3. Создание символических ссылок для разрешения ../include
         parent_dir = os.path.dirname(pwn_dir)
         for inc_d in list(found_include_dirs):
             try:
@@ -212,6 +234,7 @@ async def handle_compilation(message: Message):
         base_name = os.path.splitext(os.path.basename(src_path))[0]
         out_path = os.path.join(tmpdir, f"{base_name}.amx")
 
+        # 4. Сбор аргументов инклудов
         include_args = [
             f"-i{pwn_dir}",
             f"-i{extract_dir}" if file_name.endswith(".zip") else f"-i{tmpdir}"
@@ -221,16 +244,17 @@ async def handle_compilation(message: Message):
         if os.path.exists(INCLUDE_DIR):
             include_args.append(f"-i{INCLUDE_DIR}")
 
-        # Безопасные флаги: -O0 (без вылета оптимизатора), -d2 (отладка без переполнения), строгие правила
+        # 5. Безопасные флаги: -O0 (без вылета оптимизатора), -d0 (без переполнения стека), -v2 (подробный лог)
         cmd = [
             "pawncc",
             src_path,
             f"-o{out_path}",
             *include_args,
             "-O0",
-            "-d2",
+            "-d0",
             "-;+",
-            "-(+"
+            "-(+",
+            "-v2"
         ]
 
         try:
